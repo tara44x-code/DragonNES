@@ -76,6 +76,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         const val CORE_NORMAL = "libfceumm_libretro_android.so"
         const val CORE_WIDE = CORE_NORMAL
         const val AUTO_SLOT = 0
+        /** NES: two controller ports. */
+        const val MAX_PLAYERS = 2
+        private const val STICK_DEADZONE = 0.5f
 
         private const val EXTRA_RESUME = "resume"
 
@@ -533,6 +536,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                     (settings.touchMode == TouchMode.AUTO && gamepadName == null))
                 touchOverride = !visibleNow
             }
+            GameMenuActivity.ACTION_SWAP_PLAYERS -> swapPlayers()
             GameMenuActivity.ACTION_QUIT -> finish() // state + SRAM were saved when the menu opened
         }
     }
@@ -558,14 +562,62 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     override fun onInputDeviceRemoved(deviceId: Int) = refreshGamepads(announce = true)
     override fun onInputDeviceChanged(deviceId: Int) = refreshGamepads(announce = false)
 
+    // ---------- Players (up to 2 controllers) ----------
+
+    /** Connected controller (device id) -> player slot, in connection order. */
+    private val padPorts = LinkedHashMap<Int, Int>()
+    /** Swaps player 1 and 2 (from the pause menu). With one pad + touch, makes the pad player 2. */
+    private var playersSwapped = false
+
+    private fun connectedPads(): List<InputDevice> = InputDevice.getDeviceIds().asSequence()
+        .mapNotNull { InputDevice.getDevice(it) }
+        .filter { !it.isVirtual && isGamepad(it.sources) }
+        .sortedBy { it.id }
+        .toList()
+
+    /** Engine port for a controller: first pad = player 1, second = player 2. */
+    private fun portOf(device: InputDevice?): Int {
+        val id = device?.id ?: return if (playersSwapped) 1 else 0
+        if (id !in padPorts) refreshGamepads(announce = false)
+        val slot = padPorts[id] ?: 0
+        return if (playersSwapped) (MAX_PLAYERS - 1 - slot) else slot
+    }
+
     private fun refreshGamepads(announce: Boolean) {
-        val before = gamepadName
-        gamepadName = InputDevice.getDeviceIds().asSequence()
-            .mapNotNull { InputDevice.getDevice(it) }
-            .firstOrNull { !it.isVirtual && isGamepad(it.sources) }?.name
-        if (announce && before != gamepadName) {
-            message = gamepadName?.let { "تم توصيل: $it 🎮" } ?: "تم فصل الجويستك"
-            CrashReporter.crumb("gamepad=${gamepadName ?: "none"}")
+        val pads = connectedPads()
+        val before = padPorts.keys.toSet()
+        padPorts.keys.retainAll(pads.map { it.id }.toSet())
+        pads.forEach { d ->
+            if (d.id !in padPorts) {
+                padPorts[d.id] = (0 until MAX_PLAYERS).firstOrNull { it !in padPorts.values } ?: (MAX_PLAYERS - 1)
+            }
+        }
+        gamepadName = pads.minByOrNull { padPorts[it.id] ?: 0 }?.name
+        if (announce && before != padPorts.keys) {
+            message = if (pads.isEmpty()) "تم فصل الجويستك" else playersText(pads)
+            CrashReporter.crumb("gamepads=${pads.joinToString { "${it.name}->${padPorts[it.id]}" }}")
+        }
+    }
+
+    private fun playersText(pads: List<InputDevice> = connectedPads()): String =
+        pads.sortedBy { portOf(it) }.joinToString("  •  ") { "🎮 لاعب ${portOf(it) + 1}: ${it.name}" }
+
+    private fun swapPlayers() {
+        // Release everything first so no button stays stuck on the old port.
+        for (port in 0 until MAX_PLAYERS) {
+            listOf(NesKeys.A, NesKeys.B, NesKeys.START, NesKeys.SELECT).forEach {
+                retroView.sendKeyEvent(KeyEvent.ACTION_UP, it, port)
+            }
+            retroView.sendMotionEvent(GLRetroView.MOTION_SOURCE_DPAD, 0f, 0f, port)
+            lastDpad[port] = null
+        }
+        turboKeys.clear()
+        playersSwapped = !playersSwapped
+        val pads = connectedPads()
+        message = when {
+            pads.isEmpty() -> "ماكو جويستك متصل"
+            pads.size == 1 -> if (playersSwapped) "🎮 الجويستك صار لاعب 2 • أزرار اللمس لاعب 1" else "🎮 الجويستك رجع لاعب 1"
+            else -> playersText(pads)
         }
     }
 
@@ -574,10 +626,26 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     private fun isGamepad(source: Int) =
         has(source, InputDevice.SOURCE_GAMEPAD) || has(source, InputDevice.SOURCE_JOYSTICK)
 
+    /**
+     * Physical pad -> key sent to the engine. Android names the bottom face button A and the
+     * right one B, while the NES has B on the left/bottom and A on the right: swap them
+     * (same as LibretroDroid's own mapping). Returns null for keys the NES doesn't use.
+     */
+    private fun physicalToRetro(keyCode: Int): Int? = when (keyCode) {
+        KeyEvent.KEYCODE_BUTTON_A -> KeyEvent.KEYCODE_BUTTON_B
+        KeyEvent.KEYCODE_BUTTON_B -> KeyEvent.KEYCODE_BUTTON_A
+        KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_BUTTON_SELECT,
+        KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_R1,
+        KeyEvent.KEYCODE_BUTTON_L2, KeyEvent.KEYCODE_BUTTON_R2,
+        KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_DPAD_DOWN,
+        KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_DPAD_RIGHT -> keyCode
+        else -> null
+    }
+
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (::retroView.isInitialized && isGamepad(event.source)) {
             if (gamepadName == null) gamepadName = event.device?.name ?: "Gamepad"
-            val port = ((event.device?.controllerNumber ?: 1) - 1).coerceAtLeast(0)
+            val port = portOf(event.device)
 
             // 1) Custom mapping chosen by the player
             padMap[event.keyCode]?.let { target ->
@@ -605,16 +673,33 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 if (coreReady && event.repeatCount == 0) setTurbo(defaultTurbo, event.action == KeyEvent.ACTION_DOWN, port)
                 return true
             }
-            if (!coreReady) return true
-            val handled = if (event.action == KeyEvent.ACTION_DOWN) retroView.onKeyDown(event.keyCode, event)
-                          else retroView.onKeyUp(event.keyCode, event)
-            if (handled) return true
+            val mapped = physicalToRetro(event.keyCode) ?: return super.dispatchKeyEvent(event)
+            if (coreReady && event.repeatCount == 0) retroView.sendKeyEvent(event.action, mapped, port)
+            return true
         }
         return super.dispatchKeyEvent(event)
     }
 
+    /** Last d-pad direction sent per player, so stick noise doesn't flood the engine. */
+    private val lastDpad = arrayOfNulls<Pair<Int, Int>>(MAX_PLAYERS)
+
+    /** Hat (d-pad) and left analog stick both steer the NES d-pad, per player. */
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
-        if (::retroView.isInitialized && coreReady && isGamepad(event.source) && retroView.onGenericMotionEvent(event)) return true
+        if (::retroView.isInitialized && coreReady && isGamepad(event.source) && event.action == MotionEvent.ACTION_MOVE) {
+            val port = portOf(event.device)
+            fun axis(hat: Int, stick: Int): Int {
+                val h = event.getAxisValue(hat)
+                if (kotlin.math.abs(h) > 0.5f) return if (h > 0) 1 else -1
+                val v = event.getAxisValue(stick)
+                return if (v > STICK_DEADZONE) 1 else if (v < -STICK_DEADZONE) -1 else 0
+            }
+            val dir = axis(MotionEvent.AXIS_HAT_X, MotionEvent.AXIS_X) to axis(MotionEvent.AXIS_HAT_Y, MotionEvent.AXIS_Y)
+            if (lastDpad[port] != dir) {
+                lastDpad[port] = dir
+                retroView.sendMotionEvent(GLRetroView.MOTION_SOURCE_DPAD, dir.first.toFloat(), dir.second.toFloat(), port)
+            }
+            return true
+        }
         return super.dispatchGenericMotionEvent(event)
     }
 

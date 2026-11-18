@@ -40,8 +40,8 @@ enum class TouchMode(val label: String) {
  * (see NesKeys); [turbo] = the app presses/releases that key rapidly while the button is held.
  */
 enum class PadTarget(val label: String, val keyCode: Int, val turbo: Boolean = false) {
-    A("A", 97), B("B", 96),                                       // KEYCODE_BUTTON_B / _A
-    TURBO_A("Turbo A", 97, turbo = true), TURBO_B("Turbo B", 96, turbo = true),
+    A("A", 96), B("B", 97),                                       // KEYCODE_BUTTON_A / _B (sent as-is)
+    TURBO_A("Turbo A", 96, turbo = true), TURBO_B("Turbo B", 97, turbo = true),
     START("START", 108), SELECT("SELECT", 109),                   // KEYCODE_BUTTON_START / _SELECT
     MENU("القائمة", -1),
 }

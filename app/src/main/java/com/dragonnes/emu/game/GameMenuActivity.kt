@@ -68,6 +68,7 @@ class GameMenuActivity : ComponentActivity() {
         const val ACTION_RESET = "reset"
         const val ACTION_QUIT = "quit"
         const val ACTION_TOUCH = "touch"
+        const val ACTION_SWAP_PLAYERS = "swap_players"
         const val SLOTS = 4
 
         fun intent(context: Context, game: Game) =
@@ -185,8 +186,16 @@ class GameMenuActivity : ComponentActivity() {
                 }
             }
 
+            Text("لاعبين (2 جويستك)", color = Neon.Cyan, fontWeight = FontWeight.Bold)
+            Text(
+                "أول جويستك تربطه = لاعب 1، والثاني = لاعب 2. ويه جويستك واحد: \"تبديل اللاعبين\" يخلي الجويستك لاعب 2 وأزرار اللمس لاعب 1.",
+                color = Neon.TextDim, fontSize = 12.sp,
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                MenuButton("تبديل اللاعبين", Icons.Default.SwapHoriz, Modifier.weight(1f)) { finishWith(ACTION_SWAP_PLAYERS) }
                 MenuButton("أزرار اللمس", Icons.Default.TouchApp, Modifier.weight(1f)) { finishWith(ACTION_TOUCH) }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 MenuButton("إعادة", Icons.Default.RestartAlt, Modifier.weight(1f)) { finishWith(ACTION_RESET) }
                 MenuButton("خروج", Icons.AutoMirrored.Filled.ExitToApp, Modifier.weight(1f)) { finishWith(ACTION_QUIT) }
             }

@@ -36,13 +36,14 @@ import com.dragonnes.emu.ui.Neon
 import kotlin.math.hypot
 
 /**
- * LibretroDroid maps Android gamepad keys to the RetroPad (A->B, B->A, X->Y, Y->X),
+ * Keys sent straight to the engine with sendKeyEvent(): LibretroDroid's native side maps
+ * KEYCODE_BUTTON_A -> RetroPad A and KEYCODE_BUTTON_B -> RetroPad B with no swap
+ * (the A<->B swap only exists for physical pads, see GameActivity.physicalToRetro),
  * and FCEUmm maps RetroPad A -> NES A, RetroPad B -> NES B.
- * So each on-screen NES button sends the Android key below.
  */
 object NesKeys {
-    const val A = KeyEvent.KEYCODE_BUTTON_B
-    const val B = KeyEvent.KEYCODE_BUTTON_A
+    const val A = KeyEvent.KEYCODE_BUTTON_A
+    const val B = KeyEvent.KEYCODE_BUTTON_B
     const val START = KeyEvent.KEYCODE_BUTTON_START
     const val SELECT = KeyEvent.KEYCODE_BUTTON_SELECT
 }
