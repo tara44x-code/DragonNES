@@ -16,3 +16,10 @@ app/src/main/assets/db/
 app/src/main/assets/cheats.zip
 # Patched LibretroDroid sources are prepared by scripts/fetch_libretrodroid.sh
 libretrodroid/src/
+# Signing material must never be committed
+*.p12
+*.pfx
+*.pem
+*.key
+*signing-secrets*
+keystore_base64*

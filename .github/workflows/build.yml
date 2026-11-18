@@ -18,6 +18,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Make sure no signing key is inside the project
+        run: |
+          bad=$(git ls-files | grep -iE '\.(jks|keystore|p12|pfx|pem|key)$|signing-secrets|keystore_base64' || true)
+          if [ -n "$bad" ]; then echo "::error::Signing material committed: $bad"; exit 1; fi
+          if git grep -qE 'BEGIN (RSA |EC )?PRIVATE KEY'; then echo "::error::A private key is committed"; exit 1; fi
+          echo "OK: no keys in the repository"
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
