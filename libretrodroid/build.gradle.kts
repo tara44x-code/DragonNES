@@ -14,7 +14,11 @@ android {
         consumerProguardFiles("consumer-rules.pro")
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
         externalNativeBuild {
-            cmake { arguments += listOf("-DANDROID_STL=c++_static") }
+            cmake {
+                arguments += listOf("-DANDROID_STL=c++_static")
+                // Newer NDKs' libc++ no longer pulls these in transitively; upstream relies on that.
+                cppFlags += listOf("-include functional", "-include algorithm")
+            }
         }
     }
 
