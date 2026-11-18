@@ -24,7 +24,7 @@ android {
         // SHA-256 of the developer's release signing certificate(s), comma separated.
         // Release builds signed with any other key refuse to run (see Integrity.kt).
         buildConfigField("String", "RELEASE_CERTS",
-            "\"8DC2C4DBD146EC206CFE9FD1100C29DACB8F034A624BB3869D39B89A7F056985\"")
+            "\"4E49723BE6391020285937FC30BD029EF948EE7F3246E567C03696F44CB7C667,8DC2C4DBD146EC206CFE9FD1100C29DACB8F034A624BB3869D39B89A7F056985\"")
     }
 
     // Optional release signing from CI secrets (falls back to debug signing).
