@@ -42,6 +42,7 @@ data class DeviceProfile(
         VideoFilter.ULTRA -> ShaderConfig.CUT3()
         VideoFilter.CRT -> ShaderConfig.CRT
         VideoFilter.LCD -> ShaderConfig.LCD
+        VideoFilter.HD -> ShaderConfig.HD
         VideoFilter.DSLR -> if (!gles3) ShaderConfig.CUT2() else ShaderConfig.DSLR(
             bloom = settings.dslrBloom,
             depthOfField = settings.dslrDof,
@@ -51,6 +52,7 @@ data class DeviceProfile(
             grade = settings.dslrGrade.id,
             // Weaker GPUs get a slightly smaller blur (fewer cache misses at the same tap count).
             blurRadius = if (tier == Tier.LOW) 1.5f else 2.0f,
+            hd = settings.dslrHd,
         )
     }
 }

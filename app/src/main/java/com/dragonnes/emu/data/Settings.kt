@@ -11,6 +11,28 @@ enum class VideoFilter(val label: String) {
     CRT("شاشة CRT"),
     LCD("شاشة LCD"),
     DSLR("📷 DSLR سينمائي"),
+    HD("✨ HD ناعم (xBR)"),
+}
+
+/** FCEUmm colour palettes ([value] = fceumm_palette core option). */
+enum class ColorPalette(val label: String, val value: String) {
+    DEFAULT("الأصلي", "default"),
+    NES_CLASSIC("NES Classic حي", "nes-classic-fbx-fs"),
+    SMOOTH_HD("ناعم HD", "smooth-v2-fbx"),
+    PVM("شاشة PVM احترافية", "pvm-style-d93-fbx"),
+    COMPOSITE("تلفزيون أصلي", "composite-direct-fbx"),
+    WAVEBEAM("زاهي (Wavebeam)", "wavebeam"),
+    DIGITAL_PRIME("Digital Prime", "digital-prime-fbx"),
+    SONY("تلفزيون Sony", "sony-cxa2025as-us"),
+    WII_VC("Wii VC مُرمَّم", "restored-wii-vc"),
+}
+
+/** Blargg NTSC signal simulation ([value] = fceumm_ntsc_filter core option). */
+enum class NtscMode(val label: String, val value: String) {
+    OFF("بدون", "disabled"),
+    COMPOSITE("Composite (تلفزيون)", "composite"),
+    SVIDEO("S-Video", "svideo"),
+    RGB("RGB نقي", "rgb"),
 }
 
 /** Colour grading of the DSLR lens look ([id] is passed to the shader). */
@@ -128,7 +150,31 @@ class Settings(context: Context) {
         set(v) = p.edit().putString("dslrGrade", v.name).apply()
 
     fun resetDslr() = p.edit().remove("dslrBloom").remove("dslrDof").remove("dslrVignette")
-        .remove("dslrAberration").remove("dslrGrain").remove("dslrGrade").apply()
+        .remove("dslrAberration").remove("dslrGrain").remove("dslrGrade").remove("dslrHd").apply()
+
+    var dslrHd: Boolean
+        get() = p.getBoolean("dslrHd", true)
+        set(v) = p.edit().putBoolean("dslrHd", v).apply()
+
+    // ---- Colours ----
+    var palette: ColorPalette
+        get() = runCatching { ColorPalette.valueOf(p.getString("palette", "NES_CLASSIC")!!) }.getOrDefault(ColorPalette.NES_CLASSIC)
+        set(v) = p.edit().putString("palette", v.name).apply()
+
+    var ntsc: NtscMode
+        get() = runCatching { NtscMode.valueOf(p.getString("ntsc", "OFF")!!) }.getOrDefault(NtscMode.OFF)
+        set(v) = p.edit().putString("ntsc", v.name).apply()
+
+    /** Core options sent to FCEUmm. */
+    fun coreVariables(): Array<com.swordfish.libretrodroid.Variable> = arrayOf(
+        com.swordfish.libretrodroid.Variable("fceumm_palette", palette.value),
+        com.swordfish.libretrodroid.Variable("fceumm_ntsc_filter", ntsc.value),
+    )
+
+    /** Swap the A and B buttons (touch and controllers). */
+    var swapAB: Boolean
+        get() = p.getBoolean("swapAB", false)
+        set(v) = p.edit().putBoolean("swapAB", v).apply()
 
     var haptics: Boolean
         get() = p.getBoolean("haptics", true)

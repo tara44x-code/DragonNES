@@ -28,12 +28,23 @@ fun DslrControls(settings: Settings, gles3: Boolean, onChange: () -> Unit = {}) 
     var vignette by remember { mutableFloatStateOf(settings.dslrVignette) }
     var aberration by remember { mutableFloatStateOf(settings.dslrAberration) }
     var grain by remember { mutableFloatStateOf(settings.dslrGrain) }
+    var hd by remember { mutableStateOf(settings.dslrHd) }
 
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         if (!gles3) {
             Text(
                 "جهازك ما يدعم OpenGL ES 3، فراح يشتغل بداله فلتر التنعيم الذكي.",
                 color = Neon.Magenta, fontSize = 12.sp,
+            )
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("✨ دقة HD (xBR) قبل العدسة", color = Neon.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text("حواف ناعمة كأن اللعبة مرسومة من جديد", color = Neon.TextDim, fontSize = 11.sp)
+            }
+            androidx.compose.material3.Switch(
+                hd, { hd = it; settings.dslrHd = it; onChange() },
+                colors = androidx.compose.material3.SwitchDefaults.colors(checkedThumbColor = Neon.Bg, checkedTrackColor = Neon.Cyan, uncheckedTrackColor = Neon.Surface),
             )
         }
         Text("تدرّج الألوان", color = Neon.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
@@ -54,6 +65,7 @@ fun DslrControls(settings: Settings, gles3: Boolean, onChange: () -> Unit = {}) 
                 settings.resetDslr()
                 grade = settings.dslrGrade; bloom = settings.dslrBloom; dof = settings.dslrDof
                 vignette = settings.dslrVignette; aberration = settings.dslrAberration; grain = settings.dslrGrain
+                hd = settings.dslrHd
                 onChange()
             }) { Text("الافتراضي", color = Neon.Magenta, fontSize = 12.sp) }
         }

@@ -68,10 +68,10 @@ index 2ec15cf..a7c1f73 100644
      JNIEnv* env,
      jclass obj
 diff --git a/libretrodroid/src/main/cpp/shadermanager.cpp b/libretrodroid/src/main/cpp/shadermanager.cpp
-index b853a6a..c144612 100644
+index b853a6a..98078a2 100644
 --- a/libretrodroid/src/main/cpp/shadermanager.cpp
 +++ b/libretrodroid/src/main/cpp/shadermanager.cpp
-@@ -1527,6 +1527,154 @@ const std::string ShaderManager::cut3UpscalePass2Fragment =
+@@ -1527,6 +1527,264 @@ const std::string ShaderManager::cut3UpscalePass2Fragment =
      "  gl_FragColor = vec4(final.rgb, 1.0);\n"
      "}";
  
@@ -92,7 +92,113 @@ index b853a6a..c144612 100644
 +    { "DSLR_GRAIN", "0.25" },
 +    { "DSLR_GRADE", "1" },
 +    { "DSLR_BLUR_RADIUS", "2.0" },
++    { "DSLR_HD", "0" },
 +};
++
++// Hyllian's xBR level 2: edge-directed HD upscaler for pixel art (single pass).
++const std::string ShaderManager::xbrFragment =
++    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
++    "#define HIGHP highp\n"
++    "#else\n"
++    "#define HIGHP mediump\n"
++    "#endif\n"
++    "precision mediump float;\n"
++    "uniform lowp sampler2D texture;\n"
++    "uniform HIGHP vec2 textureSize;\n"
++    "uniform mediump float screenDensity;\n"
++    "varying HIGHP vec2 coords;\n"
++    "\n"
++    "// Hyllian's xBR level 2 (edge-directed pixel-art upscaler), GLSL ES 1.0 port for DragonNES.\n"
++    "#define XBR_EQ 15.0\n"
++    "#define XBR_COEF 2.0\n"
++    "\n"
++    "const vec3 Y = vec3(14.352, 28.176, 5.472);\n"
++    "const vec4 Ao = vec4( 1.0, -1.0, -1.0,  1.0);\n"
++    "const vec4 Bo = vec4( 1.0,  1.0, -1.0, -1.0);\n"
++    "const vec4 Co = vec4( 1.5,  0.5, -0.5,  0.5);\n"
++    "const vec4 Ax = vec4( 1.0, -1.0, -1.0,  1.0);\n"
++    "const vec4 Bx = vec4( 0.5,  2.0, -0.5, -2.0);\n"
++    "const vec4 Cx = vec4( 1.0,  1.0, -0.5,  0.0);\n"
++    "const vec4 Ay = vec4( 1.0, -1.0, -1.0,  1.0);\n"
++    "const vec4 By = vec4( 2.0,  0.5, -2.0, -0.5);\n"
++    "const vec4 Cy = vec4( 2.0,  0.0, -1.0,  0.5);\n"
++    "\n"
++    "vec4 df(vec4 a, vec4 b) { return abs(a - b); }\n"
++    "vec4 eq(vec4 a, vec4 b) { return step(df(a, b), vec4(XBR_EQ)); }\n"
++    "vec4 neq(vec4 a, vec4 b) { return 1.0 - eq(a, b); }\n"
++    "vec4 ne(vec4 a, vec4 b) { return step(vec4(0.0001), df(a, b)); }\n"
++    "vec4 wd(vec4 a, vec4 b, vec4 c, vec4 d, vec4 e, vec4 f, vec4 g, vec4 h) {\n"
++    "  return df(a, b) + df(a, c) + df(d, e) + df(d, f) + 4.0 * df(g, h);\n"
++    "}\n"
++    "\n"
++    "HIGHP vec2 texel;\n"
++    "HIGHP vec2 base;\n"
++    "vec3 T(float x, float y) { return texture2D(texture, base + vec2(x, y) * texel).rgb; }\n"
++    "\n"
++    "void main() {\n"
++    "  texel = 1.0 / textureSize;\n"
++    "  HIGHP vec2 pos = coords * textureSize;\n"
++    "  HIGHP vec2 fp = fract(pos);\n"
++    "  base = (floor(pos) + 0.5) * texel;\n"
++    "\n"
++    "  vec3 A1 = T(-1.0, -2.0), B1 = T(0.0, -2.0), C1 = T(1.0, -2.0);\n"
++    "  vec3 A0 = T(-2.0, -1.0), A = T(-1.0, -1.0), B = T(0.0, -1.0), C = T(1.0, -1.0), C4 = T(2.0, -1.0);\n"
++    "  vec3 D0 = T(-2.0,  0.0), D = T(-1.0,  0.0), E = T(0.0,  0.0), F = T(1.0,  0.0), F4 = T(2.0,  0.0);\n"
++    "  vec3 G0 = T(-2.0,  1.0), G = T(-1.0,  1.0), H = T(0.0,  1.0), I = T(1.0,  1.0), I4 = T(2.0,  1.0);\n"
++    "  vec3 G5 = T(-1.0,  2.0), H5 = T(0.0,  2.0), I5 = T(1.0,  2.0);\n"
++    "\n"
++    "  vec4 b = vec4(dot(B, Y), dot(D, Y), dot(H, Y), dot(F, Y));\n"
++    "  vec4 c = vec4(dot(C, Y), dot(A, Y), dot(G, Y), dot(I, Y));\n"
++    "  vec4 e = vec4(dot(E, Y));\n"
++    "  vec4 d = b.yzwx;\n"
++    "  vec4 f = b.wxyz;\n"
++    "  vec4 g = c.zwxy;\n"
++    "  vec4 h = b.zwxy;\n"
++    "  vec4 i = c.wxyz;\n"
++    "  vec4 i4 = vec4(dot(I4, Y), dot(C1, Y), dot(A0, Y), dot(G5, Y));\n"
++    "  vec4 i5 = vec4(dot(I5, Y), dot(C4, Y), dot(A1, Y), dot(G0, Y));\n"
++    "  vec4 h5 = vec4(dot(H5, Y), dot(F4, Y), dot(B1, Y), dot(D0, Y));\n"
++    "  vec4 f4 = h5.yzwx;\n"
++    "\n"
++    "  // Anti-aliased line tests (width = about one screen pixel).\n"
++    "  float dlt = clamp(1.0 / max(screenDensity, 1.0), 0.05, 0.5);\n"
++    "  vec4 fx   = Ao * fp.y + Bo * fp.x;\n"
++    "  vec4 fx_l = Ax * fp.y + Bx * fp.x;\n"
++    "  vec4 fx_u = Ay * fp.y + By * fp.x;\n"
++    "  vec4 fx45 = smoothstep(Co - dlt, Co + dlt, fx);\n"
++    "  vec4 fx30 = smoothstep(Cx - dlt, Cx + dlt, fx_l);\n"
++    "  vec4 fx60 = smoothstep(Cy - dlt, Cy + dlt, fx_u);\n"
++    "\n"
++    "  vec4 restr = ne(e, f) * ne(e, h) * clamp(\n"
++    "      neq(f, b) * neq(f, c) + neq(h, d) * neq(h, g)\n"
++    "    + eq(e, i) * clamp(neq(f, f4) * neq(f, i4) + neq(h, h5) * neq(h, i5), 0.0, 1.0)\n"
++    "    + eq(e, g) + eq(e, c), 0.0, 1.0);\n"
++    "  vec4 restr_l = ne(e, g) * ne(d, g);\n"
++    "  vec4 restr_u = ne(e, c) * ne(b, c);\n"
++    "\n"
++    "  vec4 edr   = step(wd(e, c, g, i, h5, f4, h, f) + 0.0001, wd(h, d, i5, f, i4, b, e, i)) * restr;\n"
++    "  vec4 edr_l = step(XBR_COEF * df(f, g), df(h, c)) * restr_l;\n"
++    "  vec4 edr_u = step(XBR_COEF * df(h, c), df(f, g)) * restr_u;\n"
++    "\n"
++    "  vec4 nc45 = edr * fx45;\n"
++    "  vec4 nc30 = edr * edr_l * fx30;\n"
++    "  vec4 nc60 = edr * edr_u * fx60;\n"
++    "  vec4 m = max(max(nc30, nc60), nc45);\n"
++    "\n"
++    "  vec4 px = step(df(e, f), df(e, h));   // 1 -> blend toward f, 0 -> toward h\n"
++    "  vec3 p0 = mix(H, F, px.x);\n"
++    "  vec3 p1 = mix(F, B, px.y);\n"
++    "  vec3 p2 = mix(B, D, px.z);\n"
++    "  vec3 p3 = mix(D, H, px.w);\n"
++    "\n"
++    "  vec3 col = E;\n"
++    "  col = mix(col, p0, m.x);\n"
++    "  col = mix(col, p1, m.y);\n"
++    "  col = mix(col, p2, m.z);\n"
++    "  col = mix(col, p3, m.w);\n"
++    "  gl_FragColor = vec4(col, 1.0);\n"
++    "}\n";
++
 +
 +const std::string ShaderManager::dslrBlurHFragment =
 +    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
@@ -143,12 +249,16 @@ index b853a6a..c144612 100644
 +    "precision mediump float;\n"
 +    "uniform lowp sampler2D texture;\n"
 +    "uniform lowp sampler2D previousPass;\n"
++    "uniform lowp sampler2D firstPass;\n"
 +    "uniform HIGHP vec2 textureSize;\n"
 +    "uniform mediump float screenDensity;\n"
 +    "uniform HIGHP float frameCount;\n"
 +    "varying HIGHP vec2 coords;\n"
 +    "\n"
 +    "vec3 sharpSample(HIGHP vec2 uv) {\n"
++    "#if DSLR_HD == 1\n"
++    "  return texture2D(firstPass, uv).rgb;\n"   // xBR-upscaled frame (pass 0)
++    "#endif\n"
 +    "  HIGHP vec2 sc = uv * textureSize;\n"
 +    "  mediump vec2 threshold = vec2(1.0 / max(screenDensity, 1.0));\n"
 +    "  mediump vec2 x = fract(sc);\n"
@@ -226,13 +336,30 @@ index b853a6a..c144612 100644
  ShaderManager::Chain ShaderManager::getShader(const ShaderManager::Config& config) {
      switch (config.type) {
      case Type::SHADER_DEFAULT: {
-@@ -1602,7 +1750,20 @@ ShaderManager::Chain ShaderManager::getShader(const ShaderManager::Config& confi
+@@ -1602,7 +1860,37 @@ ShaderManager::Chain ShaderManager::getShader(const ShaderManager::Config& confi
              false
          };
      }
 +
++    case Type::SHADER_HD: {
++        return { { { defaultShaderVertex, xbrFragment, true, 1.0 } }, true };
++    }
++
 +    case Type::SHADER_DSLR: {
 +        std::string defines = buildDefines(dslrParams, config.params);
++        auto hd = config.params.find("DSLR_HD");
++        if (hd != config.params.end() && hd->second == "1") {
++            // xBR at 4x into an offscreen buffer, then the lens effects read it as "firstPass".
++            return {
++                {
++                    { defaultShaderVertex, xbrFragment, true, 4.0 },
++                    { defines + defaultShaderVertex, defines + dslrBlurHFragment, true, 0.5 },
++                    { defines + defaultShaderVertex, defines + dslrBlurVFragment, true, 0.5 },
++                    { defines + defaultShaderVertex, defines + dslrFinalFragment, true, 1.0 },
++                },
++                true
++            };
++        }
 +        return {
 +            {
 +                { defines + defaultShaderVertex, defines + dslrBlurHFragment, true, 0.5 },
@@ -248,18 +375,19 @@ index b853a6a..c144612 100644
  
  std::string ShaderManager::buildDefines(
 diff --git a/libretrodroid/src/main/cpp/shadermanager.h b/libretrodroid/src/main/cpp/shadermanager.h
-index 4407e8b..7bcbf93 100644
+index 4407e8b..a9fdc70 100644
 --- a/libretrodroid/src/main/cpp/shadermanager.h
 +++ b/libretrodroid/src/main/cpp/shadermanager.h
-@@ -51,6 +51,7 @@ public:
+@@ -51,6 +51,8 @@ public:
          SHADER_UPSCALE_CUT = 4,
          SHADER_UPSCALE_CUT2 = 5,
          SHADER_UPSCALE_CUT3 = 6,
 +        SHADER_DSLR = 7,
++        SHADER_HD = 8,
      };
  
      struct Config {
-@@ -88,6 +89,11 @@ private:
+@@ -88,6 +90,12 @@ private:
      static const std::string cut3UpscalePass2Vertex;
      static const std::string cut3UpscalePass2Fragment;
  
@@ -267,23 +395,25 @@ index 4407e8b..7bcbf93 100644
 +    static const std::string dslrBlurHFragment;
 +    static const std::string dslrBlurVFragment;
 +    static const std::string dslrFinalFragment;
++    static const std::string xbrFragment;
 +
  private:
      static std::string buildDefines(
          std::unordered_map<std::string, std::string> baseParams,
 diff --git a/libretrodroid/src/main/cpp/video.cpp b/libretrodroid/src/main/cpp/video.cpp
-index a75dbaf..0136655 100644
+index a75dbaf..98f1a56 100644
 --- a/libretrodroid/src/main/cpp/video.cpp
 +++ b/libretrodroid/src/main/cpp/video.cpp
-@@ -130,6 +130,7 @@ void Video::updateProgram() {
+@@ -130,6 +130,8 @@ void Video::updateProgram() {
          shader.gTextureSizeHandle = glGetUniformLocation(shader.gProgram, "textureSize");
  
          shader.gScreenDensityHandle = glGetUniformLocation(shader.gProgram, "screenDensity");
 +        shader.gFrameCountHandle = glGetUniformLocation(shader.gProgram, "frameCount");
++        shader.gFirstPassTextureHandle = glGetUniformLocation(shader.gProgram, "firstPass");
  
          shadersChain.push_back(shader);
      });
-@@ -159,6 +160,7 @@ void Video::renderFrame() {
+@@ -159,6 +161,7 @@ void Video::renderFrame() {
      }
  
      updateProgram();
@@ -291,29 +421,49 @@ index a75dbaf..0136655 100644
      for (int i = 0; i < shadersChain.size(); ++i) {
          auto shader = shadersChain[i];
          auto passData = renderer->getPassData(i);
-@@ -196,6 +198,9 @@ void Video::renderFrame() {
+@@ -196,6 +199,17 @@ void Video::renderFrame() {
          glUniform2f(shader.gTextureSizeHandle, getTextureWidth(), getTextureHeight());
  
          glUniform1f(shader.gScreenDensityHandle, getScreenDensity());
 +        if (shader.gFrameCountHandle != -1) {
 +            glUniform1f(shader.gFrameCountHandle, (float) frameCounter);
 +        }
++        // Output of the first pass, for chains whose last pass needs it (DSLR + HD).
++        auto firstPassTexture = renderer->getPassData(1).texture;
++        bool bindFirstPass = shader.gFirstPassTextureHandle != -1 && firstPassTexture.has_value();
++        if (bindFirstPass) {
++            glActiveTexture(GL_TEXTURE0 + 2);
++            glBindTexture(GL_TEXTURE_2D, firstPassTexture.value());
++            glUniform1i(shader.gFirstPassTextureHandle, 2);
++        }
  
          glDrawArrays(GL_TRIANGLES, 0, 6);
  
+@@ -206,6 +220,10 @@ void Video::renderFrame() {
+             glActiveTexture(GL_TEXTURE0 + 1);
+             glBindTexture(GL_TEXTURE_2D, 0);
+         }
++        if (bindFirstPass) {
++            glActiveTexture(GL_TEXTURE0 + 2);
++            glBindTexture(GL_TEXTURE_2D, 0);
++        }
+         glActiveTexture(GL_TEXTURE0);
+         glBindTexture(GL_TEXTURE_2D, 0);
+ 
 diff --git a/libretrodroid/src/main/cpp/video.h b/libretrodroid/src/main/cpp/video.h
-index 05bd6b6..2c67371 100644
+index 05bd6b6..e7a117c 100644
 --- a/libretrodroid/src/main/cpp/video.h
 +++ b/libretrodroid/src/main/cpp/video.h
-@@ -51,6 +51,7 @@ public:
+@@ -51,6 +51,8 @@ public:
          GLint gPreviousPassTextureHandle = 0;
          GLint gScreenDensityHandle = 0;
          GLint gTextureSizeHandle = 0;
 +        GLint gFrameCountHandle = -1;
++        GLint gFirstPassTextureHandle = -1;
      };
  
      Video(
-@@ -103,6 +104,7 @@ private:
+@@ -103,6 +105,7 @@ private:
      std::optional<ShaderManager::Config> loadedShaderType = std::nullopt;
  
      bool isDirty = false;
@@ -322,7 +472,7 @@ index 05bd6b6..2c67371 100644
  
      std::vector<ShaderChainEntry> shadersChain;
 diff --git a/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt b/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt
-index 7eb8602..c69802c 100644
+index 7eb8602..defb444 100644
 --- a/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt
 +++ b/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt
 @@ -67,6 +67,11 @@ class GLRetroView(
@@ -337,7 +487,7 @@ index 7eb8602..c69802c 100644
      var viewportAlignment: ViewportAlignment by Delegates.observable(ViewportAlignment.CENTER) { _, _, value ->
          LibretroDroid.setViewportAlignment(value.value)
      }
-@@ -444,6 +449,20 @@ class GLRetroView(
+@@ -444,6 +449,23 @@ class GLRetroView(
                  )
              )
  
@@ -352,13 +502,16 @@ index 7eb8602..c69802c 100644
 +                    "DSLR_GRAIN" to dslrParam(config.grain),
 +                    "DSLR_GRADE" to config.grade.coerceIn(0, 4).toString(),
 +                    "DSLR_BLUR_RADIUS" to dslrParam(config.blurRadius.coerceIn(0.5f, 4f)),
++                    "DSLR_HD" to if (config.hd) "1" else "0",
 +                )
 +            )
++
++            is ShaderConfig.HD -> GLRetroShader(LibretroDroid.SHADER_HD)
 +
              is ShaderConfig.CUT3 -> GLRetroShader(
                  LibretroDroid.SHADER_UPSCALE_CUT3,
                  buildParams(
-@@ -463,6 +482,10 @@ class GLRetroView(
+@@ -463,6 +485,10 @@ class GLRetroView(
          }
      }
  
@@ -370,18 +523,19 @@ index 7eb8602..c69802c 100644
          return param.toString()
      }
 diff --git a/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java b/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java
-index 50eafa1..e33d589 100644
+index 50eafa1..4323d54 100644
 --- a/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java
 +++ b/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java
-@@ -37,6 +37,7 @@ public class LibretroDroid {
+@@ -37,6 +37,8 @@ public class LibretroDroid {
      public static final int SHADER_UPSCALE_CUT = 4;
      public static final int SHADER_UPSCALE_CUT2 = 5;
      public static final int SHADER_UPSCALE_CUT3 = 6;
 +    public static final int SHADER_DSLR = 7;
++    public static final int SHADER_HD = 8;
  
      public static final String SHADER_UPSCALE_CUT_PARAM_USE_DYNAMIC_BLEND = "USE_DYNAMIC_BLEND";
      public static final String SHADER_UPSCALE_CUT_PARAM_BLEND_MIN_CONTRAST_EDGE = "BLEND_MIN_CONTRAST_EDGE";
-@@ -138,6 +139,8 @@ public class LibretroDroid {
+@@ -138,6 +140,8 @@ public class LibretroDroid {
      public static native void onKeyEvent(int port, int action, int keyCode);
  
      public static native void refreshAspectRatio();
@@ -391,10 +545,10 @@ index 50eafa1..e33d589 100644
      public static native Controller[][] getControllers();
      public static native void setControllerType(int port, int type);
 diff --git a/libretrodroid/src/main/java/com/swordfish/libretrodroid/ShaderConfig.kt b/libretrodroid/src/main/java/com/swordfish/libretrodroid/ShaderConfig.kt
-index 5bf4514..0b824a9 100644
+index 5bf4514..d108dd2 100644
 --- a/libretrodroid/src/main/java/com/swordfish/libretrodroid/ShaderConfig.kt
 +++ b/libretrodroid/src/main/java/com/swordfish/libretrodroid/ShaderConfig.kt
-@@ -62,4 +62,19 @@ sealed interface ShaderConfig {
+@@ -62,4 +62,24 @@ sealed interface ShaderConfig {
          val hardEdgesSearchMaxError: Float = 0.25f,
          val hardEdgesSearchMaxDistance: Int = 4,
      ) : ShaderConfig
@@ -412,5 +566,10 @@ index 5bf4514..0b824a9 100644
 +        val grain: Float = 0.25f,
 +        val grade: Int = 1,
 +        val blurRadius: Float = 2.0f,
++        /** Upscale with xBR (HD edges) before the lens effects. */
++        val hd: Boolean = false,
 +    ) : ShaderConfig
++
++    /** Hyllian's xBR level 2: smooth HD edges for pixel art (single pass). */
++    object HD : ShaderConfig
  }

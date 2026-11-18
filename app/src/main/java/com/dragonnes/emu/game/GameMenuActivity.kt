@@ -63,6 +63,7 @@ class GameMenuActivity : ComponentActivity() {
         const val RES_CHEATS_CHANGED = "cheats"
         const val RES_FILTER_CHANGED = "filter"
         const val RES_ASPECT_CHANGED = "aspect"
+        const val RES_COLORS_CHANGED = "colors"
         const val ACTION_SAVE = "save"
         const val ACTION_LOAD = "load"
         const val ACTION_RESET = "reset"
@@ -81,6 +82,7 @@ class GameMenuActivity : ComponentActivity() {
     private var cheatsChanged = false
     private var filterChanged = false
     private var aspectChanged = false
+    private var colorsChanged = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -114,6 +116,7 @@ class GameMenuActivity : ComponentActivity() {
             putExtra(RES_CHEATS_CHANGED, cheatsChanged)
             putExtra(RES_FILTER_CHANGED, filterChanged)
             putExtra(RES_ASPECT_CHANGED, aspectChanged)
+            putExtra(RES_COLORS_CHANGED, colorsChanged)
         })
     }
 
@@ -167,6 +170,9 @@ class GameMenuActivity : ComponentActivity() {
                     }
                 }
             }
+
+            Text("الألوان", color = Neon.Cyan, fontWeight = FontWeight.Bold)
+            com.dragonnes.emu.ui.ColorControls(settings) { colorsChanged = true; setResultFor(null) }
 
             Text("فلتر الصورة", color = Neon.Cyan, fontWeight = FontWeight.Bold)
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {

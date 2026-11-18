@@ -182,6 +182,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             rumbleEventsEnabled = false
             preferLowLatencyAudio = true
             skipDuplicateFrames = profile.skipDuplicateFrames
+            variables = settings.coreVariables()
         }
         retroView = GLRetroView(this, data)
         lifecycle.addObserver(retroView)
@@ -238,7 +239,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                     ),
                     fastForward = fastForward,
                     onKey = { code, pressed ->
-                        if (coreReady) retroView.sendKeyEvent(if (pressed) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP, code)
+                        if (coreReady) retroView.sendKeyEvent(if (pressed) KeyEvent.ACTION_DOWN else KeyEvent.ACTION_UP, ab(code))
                     },
                     onTurbo = ::setTurbo,
                     onDpad = { x, y -> if (coreReady) retroView.sendMotionEvent(GLRetroView.MOTION_SOURCE_DPAD, x, y) },
@@ -390,8 +391,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     private val turboKeys = java.util.concurrent.ConcurrentHashMap<Int, Int>()
     private var turboJob: kotlinx.coroutines.Job? = null
 
-    private fun setTurbo(keyCode: Int, pressed: Boolean, port: Int = 0) {
+    private fun setTurbo(rawKey: Int, pressed: Boolean, port: Int = 0) {
         if (!coreReady) return
+        val keyCode = ab(rawKey)
         if (pressed) {
             turboKeys[keyCode] = port
             if (turboJob?.isActive != true) turboJob = lifecycleScope.launch(safe) {
@@ -489,6 +491,11 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     }
 
     private fun handleMenuResult(data: Intent) {
+        if (data.getBooleanExtra(GameMenuActivity.RES_COLORS_CHANGED, false)) {
+            val vars = settings.coreVariables()
+            retroView.queueEvent { runCatching { retroView.updateVariables(*vars) } }
+            CrashReporter.crumb("colors: ${vars.joinToString { "${it.key}=${it.value}" }}")
+        }
         if (data.getBooleanExtra(GameMenuActivity.RES_FILTER_CHANGED, false)) {
             retroView.shader = profile.shaderFor(settings.filter, settings)
         }
@@ -545,8 +552,18 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     private val inputManager by lazy { getSystemService(Context.INPUT_SERVICE) as InputManager }
 
+    /** Player option "swap A and B" (Settings), applied to every input source. */
+    private var swapAB = false
+
+    private fun ab(code: Int): Int = if (!swapAB) code else when (code) {
+        KeyEvent.KEYCODE_BUTTON_A -> KeyEvent.KEYCODE_BUTTON_B
+        KeyEvent.KEYCODE_BUTTON_B -> KeyEvent.KEYCODE_BUTTON_A
+        else -> code
+    }
+
     override fun onResume() {
         super.onResume()
+        swapAB = settings.swapAB
         hideSystemBars()
         padMap = settings.padMap
         refreshGamepads(announce = false)
@@ -654,7 +671,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 } else if (target.turbo) {
                     if (event.repeatCount == 0) setTurbo(target.keyCode, event.action == KeyEvent.ACTION_DOWN, port)
                 } else if (coreReady && event.repeatCount == 0) {
-                    retroView.sendKeyEvent(event.action, target.keyCode, port)
+                    retroView.sendKeyEvent(event.action, ab(target.keyCode), port)
                 }
                 return true
             }
@@ -674,7 +691,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 return true
             }
             val mapped = physicalToRetro(event.keyCode) ?: return super.dispatchKeyEvent(event)
-            if (coreReady && event.repeatCount == 0) retroView.sendKeyEvent(event.action, mapped, port)
+            if (coreReady && event.repeatCount == 0) retroView.sendKeyEvent(event.action, ab(mapped), port)
             return true
         }
         return super.dispatchKeyEvent(event)

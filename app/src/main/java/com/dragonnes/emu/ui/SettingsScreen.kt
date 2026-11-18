@@ -44,6 +44,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
     var turboSpeed by remember { mutableStateOf(s.turboSpeed) }
     var rewind by remember { mutableStateOf(s.rewind ?: (vm.profile?.rewindByDefault ?: true)) }
     var haptics by remember { mutableStateOf(s.haptics) }
+    var swapAB by remember { mutableStateOf(s.swapAB) }
     var autoResume by remember { mutableStateOf(s.autoResume) }
     var opacity by remember { mutableFloatStateOf(s.controlsOpacity) }
     var scale by remember { mutableFloatStateOf(s.controlsScale) }
@@ -105,6 +106,10 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
             }
         }
 
+        Section("الألوان") {
+            ColorControls(s)
+        }
+
         Section("التحكم") {
             Text("أزرار اللمس", color = Neon.Text, fontSize = 14.sp)
             FlowRowCompat {
@@ -121,6 +126,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
                 TurboSpeed.entries.forEach { t -> NeonChip("${t.label} (${t.hz}/ث)", turboSpeed == t) { turboSpeed = t; s.turboSpeed = t } }
             }
             Toggle("الاهتزاز عند اللمس", null, haptics) { haptics = it; s.haptics = it }
+            Toggle("تبديل A و B", "إذا تحس الزرين معكوسين باللعبة", swapAB) { swapAB = it; s.swapAB = it }
             Text("شفافية الأزرار ${(opacity * 100).toInt()}%", color = Neon.Text, fontSize = 14.sp)
             Slider(opacity, { opacity = it; s.controlsOpacity = it }, valueRange = 0.2f..1f, colors = neonSlider())
             Text("حجم الأزرار ${(scale * 100).toInt()}%", color = Neon.Text, fontSize = 14.sp)
@@ -169,6 +175,7 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
 
         Section("حول") {
             Text("تطوير: مهند سات لنك", color = Neon.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Text("DragonNES v${com.dragonnes.emu.BuildConfig.VERSION_NAME}", color = Neon.TextDim, fontSize = 12.sp)
         }
     }
 }
