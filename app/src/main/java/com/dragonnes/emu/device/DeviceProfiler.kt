@@ -6,6 +6,7 @@ import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.GLES20
 import android.os.Build
+import com.dragonnes.emu.data.Settings
 import com.dragonnes.emu.data.VideoFilter
 import com.swordfish.libretrodroid.ShaderConfig
 import java.io.File
@@ -19,6 +20,8 @@ data class DeviceProfile(
     val maxGhz: Float,
     val ramGb: Float,
     val tier: Tier,
+    /** OpenGL ES 3 is needed by the multi-pass DSLR shader. */
+    val gles3: Boolean = true,
 ) {
     /** Filter picked automatically for this hardware. */
     val autoFilter: VideoFilter
@@ -32,13 +35,23 @@ data class DeviceProfile(
     val rewindIntervalMs: Long get() = if (tier == Tier.HIGH) 250 else 500
     val skipDuplicateFrames: Boolean get() = tier == Tier.LOW
 
-    fun shaderFor(filter: VideoFilter): ShaderConfig = when (if (filter == VideoFilter.AUTO) autoFilter else filter) {
+    fun shaderFor(filter: VideoFilter, settings: Settings): ShaderConfig = when (if (filter == VideoFilter.AUTO) autoFilter else filter) {
         VideoFilter.PIXEL, VideoFilter.AUTO -> ShaderConfig.Default
         VideoFilter.SHARP -> ShaderConfig.Sharp
         VideoFilter.SMOOTH -> ShaderConfig.CUT2()
         VideoFilter.ULTRA -> ShaderConfig.CUT3()
         VideoFilter.CRT -> ShaderConfig.CRT
         VideoFilter.LCD -> ShaderConfig.LCD
+        VideoFilter.DSLR -> if (!gles3) ShaderConfig.CUT2() else ShaderConfig.DSLR(
+            bloom = settings.dslrBloom,
+            depthOfField = settings.dslrDof,
+            vignette = settings.dslrVignette,
+            aberration = settings.dslrAberration,
+            grain = settings.dslrGrain,
+            grade = settings.dslrGrade.id,
+            // Weaker GPUs get a slightly smaller blur (fewer cache misses at the same tap count).
+            blurRadius = if (tier == Tier.LOW) 1.5f else 2.0f,
+        )
     }
 }
 
@@ -70,7 +83,9 @@ object DeviceProfiler {
         val avg = (gpuScore * 2 + cpuScore + ramScore) / 4f   // GPU matters most for shaders
         val tier = when { avg >= 2.5f -> Tier.HIGH; avg >= 1.75f -> Tier.MID; else -> Tier.LOW }
 
-        return DeviceProfile(gpu, soc, cores, ghz, ramGb, tier)
+        val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val gles3 = am.deviceConfigurationInfo.reqGlEsVersion >= 0x30000
+        return DeviceProfile(gpu, soc, cores, ghz, ramGb, tier, gles3)
     }
 
     private fun gpuScore(gpu: String): Int {

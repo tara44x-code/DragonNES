@@ -1,0 +1,416 @@
+diff --git a/libretrodroid/src/main/AndroidManifest.xml b/libretrodroid/src/main/AndroidManifest.xml
+index f47302e..6dacc87 100644
+--- a/libretrodroid/src/main/AndroidManifest.xml
++++ b/libretrodroid/src/main/AndroidManifest.xml
+@@ -1,4 +1,3 @@
+-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+-    package="com.swordfish.libretrodroid">
++<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+     <uses-feature android:glEsVersion="0x00020000" android:required="true" />
+ </manifest>
+diff --git a/libretrodroid/src/main/cpp/libretrodroid.cpp b/libretrodroid/src/main/cpp/libretrodroid.cpp
+index 60640c4..1052183 100644
+--- a/libretrodroid/src/main/cpp/libretrodroid.cpp
++++ b/libretrodroid/src/main/cpp/libretrodroid.cpp
+@@ -490,7 +490,15 @@ void LibretroDroid::step() {
+     }
+ }
+ 
++void LibretroDroid::setAspectRatioOverride(float aspectRatio) {
++    aspectRatioOverride = aspectRatio;
++    if (video) {
++        refreshAspectRatio();
++    }
++}
++
+ float LibretroDroid::getAspectRatio() {
++    if (aspectRatioOverride > 0) return aspectRatioOverride;
+     float gameAspectRatio = Environment::getInstance().retrieveGameSpecificAspectRatio();
+     return gameAspectRatio > 0 ? gameAspectRatio : defaultAspectRatio;
+ }
+diff --git a/libretrodroid/src/main/cpp/libretrodroid.h b/libretrodroid/src/main/cpp/libretrodroid.h
+index b507aee..3762722 100644
+--- a/libretrodroid/src/main/cpp/libretrodroid.h
++++ b/libretrodroid/src/main/cpp/libretrodroid.h
+@@ -59,6 +59,7 @@ public:
+     void operator=(LibretroDroid const&) = delete;
+ 
+     void setViewport(Rect viewportRect);
++    void setAspectRatioOverride(float aspectRatio);
+ 
+ private:
+     LibretroDroid() {}
+@@ -174,6 +175,7 @@ private:
+     ImmersiveMode::Config immersiveModeConfig {};
+ 
+     float defaultAspectRatio = 1.0;
++    float aspectRatioOverride = -1.0;
+     bool dirtyVideo = false;
+ 
+     std::mutex coreLock;
+diff --git a/libretrodroid/src/main/cpp/libretrodroidjni.cpp b/libretrodroid/src/main/cpp/libretrodroidjni.cpp
+index 2ec15cf..a7c1f73 100644
+--- a/libretrodroid/src/main/cpp/libretrodroidjni.cpp
++++ b/libretrodroid/src/main/cpp/libretrodroidjni.cpp
+@@ -599,6 +599,14 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setViewpor
+     LibretroDroid::getInstance().setViewportAlignment(viewportAlignment);
+ }
+ 
++JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setAspectRatioOverride(
++    JNIEnv* env,
++    jclass obj,
++    jfloat aspectRatio
++) {
++    LibretroDroid::getInstance().setAspectRatioOverride(aspectRatio);
++}
++
+ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_refreshAspectRatio(
+     JNIEnv* env,
+     jclass obj
+diff --git a/libretrodroid/src/main/cpp/shadermanager.cpp b/libretrodroid/src/main/cpp/shadermanager.cpp
+index b853a6a..c144612 100644
+--- a/libretrodroid/src/main/cpp/shadermanager.cpp
++++ b/libretrodroid/src/main/cpp/shadermanager.cpp
+@@ -1527,6 +1527,154 @@ const std::string ShaderManager::cut3UpscalePass2Fragment =
+     "  gl_FragColor = vec4(final.rgb, 1.0);\n"
+     "}";
+ 
++
++// ---------------------------------------------------------------------------------------------
++// DSLR / cinematic lens look (DragonNES).
++// Pass 0 + 1: separable gaussian blur at half resolution (feeds bloom and depth of field).
++// Pass 2: sharp pixel-art upscale + chromatic aberration + depth of field + bloom
++//         + colour grading + vignette + animated film grain.
++// ---------------------------------------------------------------------------------------------
++
++const std::unordered_map<std::string, std::string> ShaderManager::dslrParams = {
++    { "DSLR_BLOOM", "0.55" },
++    { "DSLR_BLOOM_THRESHOLD", "0.6" },
++    { "DSLR_DOF", "0.45" },
++    { "DSLR_VIGNETTE", "0.45" },
++    { "DSLR_ABERRATION", "0.35" },
++    { "DSLR_GRAIN", "0.25" },
++    { "DSLR_GRADE", "1" },
++    { "DSLR_BLUR_RADIUS", "2.0" },
++};
++
++const std::string ShaderManager::dslrBlurHFragment =
++    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
++    "#define HIGHP highp\n"
++    "#else\n"
++    "#define HIGHP mediump\n"
++    "#endif\n"
++    "precision mediump float;\n"
++    "uniform lowp sampler2D texture;\n"
++    "uniform HIGHP vec2 textureSize;\n"
++    "varying HIGHP vec2 coords;\n"
++    "void main() {\n"
++    "  HIGHP vec2 o = vec2(DSLR_BLUR_RADIUS / textureSize.x, 0.0);\n"
++    "  vec3 c = texture2D(texture, coords).rgb * 0.2270270;\n"
++    "  c += texture2D(texture, coords + o * 1.3846154).rgb * 0.3162162;\n"
++    "  c += texture2D(texture, coords - o * 1.3846154).rgb * 0.3162162;\n"
++    "  c += texture2D(texture, coords + o * 3.2307692).rgb * 0.0702703;\n"
++    "  c += texture2D(texture, coords - o * 3.2307692).rgb * 0.0702703;\n"
++    "  gl_FragColor = vec4(c, 1.0);\n"
++    "}\n";
++
++const std::string ShaderManager::dslrBlurVFragment =
++    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
++    "#define HIGHP highp\n"
++    "#else\n"
++    "#define HIGHP mediump\n"
++    "#endif\n"
++    "precision mediump float;\n"
++    "uniform lowp sampler2D previousPass;\n"
++    "uniform HIGHP vec2 textureSize;\n"
++    "varying HIGHP vec2 coords;\n"
++    "void main() {\n"
++    "  HIGHP vec2 o = vec2(0.0, DSLR_BLUR_RADIUS / textureSize.y);\n"
++    "  vec3 c = texture2D(previousPass, coords).rgb * 0.2270270;\n"
++    "  c += texture2D(previousPass, coords + o * 1.3846154).rgb * 0.3162162;\n"
++    "  c += texture2D(previousPass, coords - o * 1.3846154).rgb * 0.3162162;\n"
++    "  c += texture2D(previousPass, coords + o * 3.2307692).rgb * 0.0702703;\n"
++    "  c += texture2D(previousPass, coords - o * 3.2307692).rgb * 0.0702703;\n"
++    "  gl_FragColor = vec4(c, 1.0);\n"
++    "}\n";
++
++const std::string ShaderManager::dslrFinalFragment =
++    "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
++    "#define HIGHP highp\n"
++    "#else\n"
++    "#define HIGHP mediump\n"
++    "#endif\n"
++    "precision mediump float;\n"
++    "uniform lowp sampler2D texture;\n"
++    "uniform lowp sampler2D previousPass;\n"
++    "uniform HIGHP vec2 textureSize;\n"
++    "uniform mediump float screenDensity;\n"
++    "uniform HIGHP float frameCount;\n"
++    "varying HIGHP vec2 coords;\n"
++    "\n"
++    "vec3 sharpSample(HIGHP vec2 uv) {\n"
++    "  HIGHP vec2 sc = uv * textureSize;\n"
++    "  mediump vec2 threshold = vec2(1.0 / max(screenDensity, 1.0));\n"
++    "  mediump vec2 x = fract(sc);\n"
++    "  x = 0.5 * (smoothstep(vec2(0.0), threshold, x) + smoothstep(vec2(1.0) - threshold, vec2(1.0), x));\n"
++    "  return texture2D(texture, (floor(sc) + x) / textureSize).rgb;\n"
++    "}\n"
++    "\n"
++    "HIGHP float hash(HIGHP vec2 p) {\n"
++    "  HIGHP vec3 p3 = fract(vec3(p.xyx) * 0.1031);\n"
++    "  p3 += dot(p3, p3.yzx + 33.33);\n"
++    "  return fract((p3.x + p3.y) * p3.z);\n"
++    "}\n"
++    "\n"
++    "float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }\n"
++    "\n"
++    "vec3 grade(vec3 c) {\n"
++    "  float l = luma(c);\n"
++    "#if DSLR_GRADE == 1\n"
++    "  // Cinematic: teal shadows, warm highlights, gentle S-curve.\n"
++    "  c = mix(c, c * vec3(0.92, 1.0, 1.06), 1.0 - smoothstep(0.0, 0.45, l));\n"
++    "  c = mix(c, c * vec3(1.06, 1.0, 0.92), smoothstep(0.35, 1.0, l));\n"
++    "  c = mix(c, c * c * (3.0 - 2.0 * c), 0.25);\n"
++    "  c = mix(vec3(luma(c)), c, 0.95);\n"
++    "#elif DSLR_GRADE == 2\n"
++    "  // Cold night lens.\n"
++    "  c = c * vec3(0.90, 0.98, 1.12);\n"
++    "  c = mix(c, c * c * (3.0 - 2.0 * c), 0.25);\n"
++    "#elif DSLR_GRADE == 3\n"
++    "  // Vintage film: lifted blacks, warm and slightly faded.\n"
++    "  c = c * vec3(1.06, 1.0, 0.88) * 0.92 + vec3(0.05, 0.04, 0.03);\n"
++    "  c = mix(vec3(luma(c)), c, 0.82);\n"
++    "#elif DSLR_GRADE == 4\n"
++    "  // Vivid: punchy contrast and saturation.\n"
++    "  c = mix(c, c * c * (3.0 - 2.0 * c), 0.5);\n"
++    "  c = mix(vec3(luma(c)), c, 1.2);\n"
++    "#endif\n"
++    "  return c;\n"
++    "}\n"
++    "\n"
++    "void main() {\n"
++    "  HIGHP vec2 uv = coords;\n"
++    "  vec2 d = uv - vec2(0.5);\n"
++    "  float r2 = dot(d, d) * 2.0;\n"   // 0 at centre, ~1 in the corners
++    "\n"
++    "  vec3 col;\n"
++    "  HIGHP vec2 ca = d * (DSLR_ABERRATION * 1.5) / textureSize.x * r2 * 4.0;\n"
++    "  col.r = sharpSample(uv + ca).r;\n"
++    "  col.g = sharpSample(uv).g;\n"
++    "  col.b = sharpSample(uv - ca).b;\n"
++    "\n"
++    "  vec3 blur = texture2D(previousPass, uv).rgb;\n"
++    "\n"
++    "  // Depth of field: the centre stays in focus, the edges fall off like a wide-open lens.\n"
++    "  float dof = DSLR_DOF * smoothstep(0.18, 0.95, r2);\n"
++    "  col = mix(col, blur, dof);\n"
++    "\n"
++    "  // Bloom: only the bright parts of the blurred image glow.\n"
++    "  float bl = luma(blur);\n"
++    "  vec3 bright = blur * smoothstep(DSLR_BLOOM_THRESHOLD, 1.0, bl);\n"
++    "  col = 1.0 - (1.0 - col) * (1.0 - bright * DSLR_BLOOM * 1.6);\n"
++    "\n"
++    "  col = grade(clamp(col, 0.0, 1.0));\n"
++    "\n"
++    "  // Optical vignette.\n"
++    "  col *= 1.0 - DSLR_VIGNETTE * smoothstep(0.25, 1.15, r2);\n"
++    "\n"
++    "  // Animated film grain, per screen pixel, stronger in the mid-tones.\n"
++    "  HIGHP float n = hash(gl_FragCoord.xy + vec2(frameCount * 37.0, frameCount * 17.0)) - 0.5;\n"
++    "  float l = luma(col);\n"
++    "  col += n * DSLR_GRAIN * 0.12 * (1.0 - abs(l - 0.5) * 1.2);\n"
++    "\n"
++    "  gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);\n"
++    "}\n";
++
+ ShaderManager::Chain ShaderManager::getShader(const ShaderManager::Config& config) {
+     switch (config.type) {
+     case Type::SHADER_DEFAULT: {
+@@ -1602,7 +1750,20 @@ ShaderManager::Chain ShaderManager::getShader(const ShaderManager::Config& confi
+             false
+         };
+     }
++
++    case Type::SHADER_DSLR: {
++        std::string defines = buildDefines(dslrParams, config.params);
++        return {
++            {
++                { defines + defaultShaderVertex, defines + dslrBlurHFragment, true, 0.5 },
++                { defines + defaultShaderVertex, defines + dslrBlurVFragment, true, 0.5 },
++                { defines + defaultShaderVertex, defines + dslrFinalFragment, true, 1.0 },
++            },
++            true
++        };
++    }
+ }
++return getShader({ Type::SHADER_DEFAULT, {} });
+ }
+ 
+ std::string ShaderManager::buildDefines(
+diff --git a/libretrodroid/src/main/cpp/shadermanager.h b/libretrodroid/src/main/cpp/shadermanager.h
+index 4407e8b..7bcbf93 100644
+--- a/libretrodroid/src/main/cpp/shadermanager.h
++++ b/libretrodroid/src/main/cpp/shadermanager.h
+@@ -51,6 +51,7 @@ public:
+         SHADER_UPSCALE_CUT = 4,
+         SHADER_UPSCALE_CUT2 = 5,
+         SHADER_UPSCALE_CUT3 = 6,
++        SHADER_DSLR = 7,
+     };
+ 
+     struct Config {
+@@ -88,6 +89,11 @@ private:
+     static const std::string cut3UpscalePass2Vertex;
+     static const std::string cut3UpscalePass2Fragment;
+ 
++    static const std::unordered_map<std::string, std::string> dslrParams;
++    static const std::string dslrBlurHFragment;
++    static const std::string dslrBlurVFragment;
++    static const std::string dslrFinalFragment;
++
+ private:
+     static std::string buildDefines(
+         std::unordered_map<std::string, std::string> baseParams,
+diff --git a/libretrodroid/src/main/cpp/video.cpp b/libretrodroid/src/main/cpp/video.cpp
+index a75dbaf..0136655 100644
+--- a/libretrodroid/src/main/cpp/video.cpp
++++ b/libretrodroid/src/main/cpp/video.cpp
+@@ -130,6 +130,7 @@ void Video::updateProgram() {
+         shader.gTextureSizeHandle = glGetUniformLocation(shader.gProgram, "textureSize");
+ 
+         shader.gScreenDensityHandle = glGetUniformLocation(shader.gProgram, "screenDensity");
++        shader.gFrameCountHandle = glGetUniformLocation(shader.gProgram, "frameCount");
+ 
+         shadersChain.push_back(shader);
+     });
+@@ -159,6 +160,7 @@ void Video::renderFrame() {
+     }
+ 
+     updateProgram();
++    frameCounter = (frameCounter + 1) % 4096;
+     for (int i = 0; i < shadersChain.size(); ++i) {
+         auto shader = shadersChain[i];
+         auto passData = renderer->getPassData(i);
+@@ -196,6 +198,9 @@ void Video::renderFrame() {
+         glUniform2f(shader.gTextureSizeHandle, getTextureWidth(), getTextureHeight());
+ 
+         glUniform1f(shader.gScreenDensityHandle, getScreenDensity());
++        if (shader.gFrameCountHandle != -1) {
++            glUniform1f(shader.gFrameCountHandle, (float) frameCounter);
++        }
+ 
+         glDrawArrays(GL_TRIANGLES, 0, 6);
+ 
+diff --git a/libretrodroid/src/main/cpp/video.h b/libretrodroid/src/main/cpp/video.h
+index 05bd6b6..2c67371 100644
+--- a/libretrodroid/src/main/cpp/video.h
++++ b/libretrodroid/src/main/cpp/video.h
+@@ -51,6 +51,7 @@ public:
+         GLint gPreviousPassTextureHandle = 0;
+         GLint gScreenDensityHandle = 0;
+         GLint gTextureSizeHandle = 0;
++        GLint gFrameCountHandle = -1;
+     };
+ 
+     Video(
+@@ -103,6 +104,7 @@ private:
+     std::optional<ShaderManager::Config> loadedShaderType = std::nullopt;
+ 
+     bool isDirty = false;
++    unsigned int frameCounter = 0;
+     bool skipDuplicateFrames = false;
+ 
+     std::vector<ShaderChainEntry> shadersChain;
+diff --git a/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt b/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt
+index 7eb8602..c69802c 100644
+--- a/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt
++++ b/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt
+@@ -67,6 +67,11 @@ class GLRetroView(
+         }
+     }
+ 
++    /** Forced picture aspect ratio (e.g. screen width / height for true full screen). 0 = core default. */
++    var aspectRatioOverride: Float by Delegates.observable(0f) { _, _, value ->
++        queueEvent { LibretroDroid.setAspectRatioOverride(value) }
++    }
++
+     var viewportAlignment: ViewportAlignment by Delegates.observable(ViewportAlignment.CENTER) { _, _, value ->
+         LibretroDroid.setViewportAlignment(value.value)
+     }
+@@ -444,6 +449,20 @@ class GLRetroView(
+                 )
+             )
+ 
++            is ShaderConfig.DSLR -> GLRetroShader(
++                LibretroDroid.SHADER_DSLR,
++                mapOf(
++                    "DSLR_BLOOM" to dslrParam(config.bloom),
++                    "DSLR_BLOOM_THRESHOLD" to dslrParam(config.bloomThreshold.coerceIn(0f, 0.95f)),
++                    "DSLR_DOF" to dslrParam(config.depthOfField),
++                    "DSLR_VIGNETTE" to dslrParam(config.vignette),
++                    "DSLR_ABERRATION" to dslrParam(config.aberration),
++                    "DSLR_GRAIN" to dslrParam(config.grain),
++                    "DSLR_GRADE" to config.grade.coerceIn(0, 4).toString(),
++                    "DSLR_BLUR_RADIUS" to dslrParam(config.blurRadius.coerceIn(0.5f, 4f)),
++                )
++            )
++
+             is ShaderConfig.CUT3 -> GLRetroShader(
+                 LibretroDroid.SHADER_UPSCALE_CUT3,
+                 buildParams(
+@@ -463,6 +482,10 @@ class GLRetroView(
+         }
+     }
+ 
++    /** Always a GLSL float literal ("0.450"), whatever the phone's locale. */
++    private fun dslrParam(value: Float): String =
++        String.format(java.util.Locale.US, "%.3f", value.coerceIn(0f, 4f))
++
+     private fun toParam(param: Float): String {
+         return param.toString()
+     }
+diff --git a/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java b/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java
+index 50eafa1..e33d589 100644
+--- a/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java
++++ b/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java
+@@ -37,6 +37,7 @@ public class LibretroDroid {
+     public static final int SHADER_UPSCALE_CUT = 4;
+     public static final int SHADER_UPSCALE_CUT2 = 5;
+     public static final int SHADER_UPSCALE_CUT3 = 6;
++    public static final int SHADER_DSLR = 7;
+ 
+     public static final String SHADER_UPSCALE_CUT_PARAM_USE_DYNAMIC_BLEND = "USE_DYNAMIC_BLEND";
+     public static final String SHADER_UPSCALE_CUT_PARAM_BLEND_MIN_CONTRAST_EDGE = "BLEND_MIN_CONTRAST_EDGE";
+@@ -138,6 +139,8 @@ public class LibretroDroid {
+     public static native void onKeyEvent(int port, int action, int keyCode);
+ 
+     public static native void refreshAspectRatio();
++    /** Forces the picture's aspect ratio (stretch / full screen). Values <= 0 restore the core's ratio. */
++    public static native void setAspectRatioOverride(float aspectRatio);
+ 
+     public static native Controller[][] getControllers();
+     public static native void setControllerType(int port, int type);
+diff --git a/libretrodroid/src/main/java/com/swordfish/libretrodroid/ShaderConfig.kt b/libretrodroid/src/main/java/com/swordfish/libretrodroid/ShaderConfig.kt
+index 5bf4514..0b824a9 100644
+--- a/libretrodroid/src/main/java/com/swordfish/libretrodroid/ShaderConfig.kt
++++ b/libretrodroid/src/main/java/com/swordfish/libretrodroid/ShaderConfig.kt
+@@ -62,4 +62,19 @@ sealed interface ShaderConfig {
+         val hardEdgesSearchMaxError: Float = 0.25f,
+         val hardEdgesSearchMaxDistance: Int = 4,
+     ) : ShaderConfig
++
++    /**
++     * Cinematic DSLR lens look (multi-pass, OpenGL ES 3 only).
++     * Strengths are 0..1. [grade]: 0 none, 1 cinematic, 2 cold, 3 vintage film, 4 vivid.
++     */
++    data class DSLR(
++        val bloom: Float = 0.55f,
++        val bloomThreshold: Float = 0.55f,
++        val depthOfField: Float = 0.45f,
++        val vignette: Float = 0.45f,
++        val aberration: Float = 0.35f,
++        val grain: Float = 0.25f,
++        val grade: Int = 1,
++        val blurRadius: Float = 2.0f,
++    ) : ShaderConfig
+ }

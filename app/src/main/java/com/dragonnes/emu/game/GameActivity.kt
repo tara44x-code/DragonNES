@@ -30,6 +30,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.LayoutDirection
@@ -135,6 +136,14 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // Draw under the notch / punch-hole too, so "full screen" really is edge to edge.
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = if (android.os.Build.VERSION.SDK_INT >= 30)
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         hideSystemBars()
 
         game = Game.fromJson(JSONObject(intent.getStringExtra(EXTRA_GAME)!!))
@@ -165,7 +174,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             systemDirectory = systemDir.absolutePath
             savesDirectory = savesDir.absolutePath
             saveRAMState = sramFile.takeIf { it.exists() && it.length() > 0 }?.readBytes()
-            shader = profile.shaderFor(settings.filter)
+            shader = profile.shaderFor(settings.filter, settings)
             rumbleEventsEnabled = false
             preferLowLatencyAudio = true
             skipDuplicateFrames = profile.skipDuplicateFrames
@@ -204,16 +213,14 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         }
 
         Box(Modifier.fillMaxSize().background(Color.Black), contentAlignment = Alignment.Center) {
-            val ratio = aspect.ratio
-            val viewModifier = if (ratio != null)
-                Modifier.fillMaxHeight().aspectRatio(ratio, matchHeightConstraintsFirst = true)
-            else Modifier.fillMaxSize()
-
+            // The view always covers the whole screen at native resolution; the engine itself
+            // sizes the picture (core ratio, a forced ratio, or exactly the screen for FULL).
+            var viewSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize.Zero) }
             AndroidView(
                 factory = { retroView },
-                modifier = viewModifier,
-                update = { applySurfaceSize(aspect) },
+                modifier = Modifier.fillMaxSize().onSizeChanged { viewSize = it },
             )
+            LaunchedEffect(aspect, viewSize) { applyAspect(aspect, viewSize.width, viewSize.height) }
 
             if (showTouch) {
                 TouchControls(
@@ -256,23 +263,18 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         }
     }
 
-    private var appliedAspect: AspectMode? = null
-
     /**
-     * Stretch modes: the GL surface keeps the console's own ratio and Android scales it to the view,
-     * whose size is the ratio the player picked (or the whole screen for FULL).
+     * ORIGINAL: the core's own ratio. FULL: exactly the screen's ratio (no black bars at all).
+     * Others: the chosen ratio, centred. Done inside the engine, so nothing is rescaled by Android.
      */
-    private fun applySurfaceSize(mode: AspectMode) {
-        if (appliedAspect == mode) return
-        appliedAspect = mode
-        val holder = retroView.holder
-        if (mode == AspectMode.ORIGINAL) {
-            holder.setSizeFromLayout()
-        } else {
-            val native = 4f / 3f
-            val h = 960
-            holder.setFixedSize((h * native).toInt(), h)
+    private fun applyAspect(mode: AspectMode, width: Int, height: Int) {
+        val ratio = when (mode) {
+            AspectMode.ORIGINAL -> 0f
+            AspectMode.FULL -> if (width > 0 && height > 0) width.toFloat() / height else return
+            else -> mode.ratio ?: 0f
         }
+        CrashReporter.crumb("aspect=$mode ratio=$ratio view=${width}x$height")
+        retroView.aspectRatioOverride = ratio
     }
 
     // ---------- Core lifecycle ----------
@@ -484,7 +486,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     private fun handleMenuResult(data: Intent) {
         if (data.getBooleanExtra(GameMenuActivity.RES_FILTER_CHANGED, false)) {
-            retroView.shader = profile.shaderFor(settings.filter)
+            retroView.shader = profile.shaderFor(settings.filter, settings)
         }
         if (data.getBooleanExtra(GameMenuActivity.RES_ASPECT_CHANGED, false)) {
             val newAspect = settings.aspect

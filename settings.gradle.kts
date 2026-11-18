@@ -17,3 +17,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "DragonNES"
 include(":app")
+include(":libretrodroid")

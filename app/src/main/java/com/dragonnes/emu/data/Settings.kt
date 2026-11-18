@@ -10,15 +10,23 @@ enum class VideoFilter(val label: String) {
     ULTRA("دقة فائقة (CUT3)"),
     CRT("شاشة CRT"),
     LCD("شاشة LCD"),
+    DSLR("📷 DSLR سينمائي"),
 }
 
-/** How the picture fills the phone screen. [ratio] = forced display ratio (null = engine decides). */
+/** Colour grading of the DSLR lens look ([id] is passed to the shader). */
+enum class DslrGrade(val label: String, val id: Int) {
+    NONE("طبيعي", 0), CINEMATIC("سينمائي", 1), COLD("بارد ليلي", 2), VINTAGE("فلم قديم", 3), VIVID("ألوان حية", 4),
+}
+
+/**
+ * How the picture fills the phone screen. [ratio] = forced picture ratio; null = the core's own
+ * ratio (ORIGINAL) or exactly the screen's ratio (FULL, edge to edge, including the notch area).
+ */
 enum class AspectMode(val label: String, val ratio: Float?) {
     ORIGINAL("أصلي", null),
-    STRETCH_16_9("تمدد 16:9", 16f / 9f),
-    STRETCH_16_10("16:10", 16f / 10f),
-    STRETCH_3_2("3:2", 3f / 2f),
-    FULL("ملء الشاشة", null),
+    TV_4_3("تلفزيون 4:3", 4f / 3f),
+    STRETCH_16_9("عريض 16:9", 16f / 9f),
+    FULL("ملء الشاشة بالكامل", null),
 }
 
 enum class TouchMode(val label: String) {
@@ -98,6 +106,29 @@ class Settings(context: Context) {
     var padPalette: com.dragonnes.emu.ui.NeonPalette
         get() = com.dragonnes.emu.ui.NeonPalette.byId(p.getString("padPal", null), p.getString("padPalC", null))
         set(v) = p.edit().putString("padPal", v.id).putString("padPalC", v.encode()).apply()
+
+    // ---- DSLR lens look (strengths 0..1) ----
+    var dslrBloom: Float
+        get() = p.getFloat("dslrBloom", 0.55f)
+        set(v) = p.edit().putFloat("dslrBloom", v).apply()
+    var dslrDof: Float
+        get() = p.getFloat("dslrDof", 0.45f)
+        set(v) = p.edit().putFloat("dslrDof", v).apply()
+    var dslrVignette: Float
+        get() = p.getFloat("dslrVignette", 0.45f)
+        set(v) = p.edit().putFloat("dslrVignette", v).apply()
+    var dslrAberration: Float
+        get() = p.getFloat("dslrAberration", 0.35f)
+        set(v) = p.edit().putFloat("dslrAberration", v).apply()
+    var dslrGrain: Float
+        get() = p.getFloat("dslrGrain", 0.25f)
+        set(v) = p.edit().putFloat("dslrGrain", v).apply()
+    var dslrGrade: DslrGrade
+        get() = runCatching { DslrGrade.valueOf(p.getString("dslrGrade", "CINEMATIC")!!) }.getOrDefault(DslrGrade.CINEMATIC)
+        set(v) = p.edit().putString("dslrGrade", v.name).apply()
+
+    fun resetDslr() = p.edit().remove("dslrBloom").remove("dslrDof").remove("dslrVignette")
+        .remove("dslrAberration").remove("dslrGrain").remove("dslrGrade").apply()
 
     var haptics: Boolean
         get() = p.getBoolean("haptics", true)

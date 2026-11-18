@@ -175,6 +175,15 @@ class GameMenuActivity : ComponentActivity() {
                     }
                 }
             }
+            if (filter == VideoFilter.DSLR) {
+                NeonPanel(Modifier.fillMaxWidth(), radius = 14.dp) {
+                    Box(Modifier.padding(12.dp)) {
+                        com.dragonnes.emu.ui.DslrControls(settings, com.dragonnes.emu.device.DeviceProfiler.get(this@GameMenuActivity).gles3) {
+                            filterChanged = true; setResultFor(null)
+                        }
+                    }
+                }
+            }
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 MenuButton("أزرار اللمس", Icons.Default.TouchApp, Modifier.weight(1f)) { finishWith(ACTION_TOUCH) }

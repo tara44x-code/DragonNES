@@ -89,6 +89,11 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
                     NeonChip(f.label, filter == f) { filter = f; s.filter = f }
                 }
             }
+            if (filter == VideoFilter.DSLR) {
+                Spacer(Modifier.height(8.dp))
+                Text("📷 عدسة DSLR: توهج، عمق مجال، تدرّج سينمائي وحبيبات فلم", color = Neon.Cyan, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                DslrControls(s, vm.profile?.gles3 ?: true)
+            }
             Spacer(Modifier.height(8.dp))
             Text("نسبة العرض", color = Neon.Text, fontSize = 14.sp)
             Text(
