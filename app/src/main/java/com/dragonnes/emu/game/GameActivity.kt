@@ -135,6 +135,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (!com.dragonnes.emu.Integrity.isOfficial(this)) { finish(); return }
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // Draw under the notch / punch-hole too, so "full screen" really is edge to edge.
         if (android.os.Build.VERSION.SDK_INT >= 28) {

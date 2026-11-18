@@ -42,6 +42,12 @@ jobs:
           echo "$KEYSTORE_B64" | base64 -d > $RUNNER_TEMP/release.jks
           echo "SIGNING_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> $GITHUB_ENV
 
+      - name: Require the release key on main
+        if: env.HAS_SIGNING_KEY != 'true' && github.event_name == 'push'
+        run: |
+          echo "::error::Signing secrets are missing. Add SIGNING_KEYSTORE_BASE64, SIGNING_STORE_PASSWORD, SIGNING_KEY_ALIAS, SIGNING_KEY_PASSWORD (Settings > Secrets and variables > Actions). Without them the APK would not pass the app's integrity check."
+          exit 1
+
       - name: Build release APK
         env:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
