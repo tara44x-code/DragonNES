@@ -14,6 +14,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.FastForward
 import androidx.compose.material.icons.filled.FastRewind
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.FiberManualRecord
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -67,6 +69,8 @@ fun TouchControls(
     onMenu: () -> Unit,
     onToggleFastForward: () -> Unit,
     onRewind: (Boolean) -> Unit,
+    recording: Boolean = false,
+    onRecord: () -> Unit = {},
 ) {
     val s = cfg.scale
     Box(Modifier.fillMaxSize().alpha(cfg.opacity).safeDrawingPadding().padding(12.dp)) {
@@ -77,6 +81,10 @@ fun TouchControls(
             }
             IconPad(Icons.Default.Menu, active = false, tap = onMenu, haptics = cfg.haptics)
             IconPad(Icons.Default.FastForward, active = fastForward, tap = onToggleFastForward, haptics = cfg.haptics)
+            IconPad(
+                if (recording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                active = recording, tap = onRecord, haptics = cfg.haptics,
+            )
         }
 
         DPad(Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 8.dp), 160.dp * s, cfg.haptics, onDpad)
