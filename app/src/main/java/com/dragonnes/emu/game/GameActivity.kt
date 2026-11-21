@@ -139,6 +139,11 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     private var showLobby by mutableStateOf(false)
     private var lanHost: com.dragonnes.emu.netplay.LanHost? = null
     private var pendingTransport: com.dragonnes.emu.netplay.Transport? = null
+    private var netLog by mutableStateOf<List<String>>(emptyList())
+    private fun netLogAdd(text: String) {
+        val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
+        netLog = (netLog + "$t $text").takeLast(20)
+    }
     private val netActive: Boolean
         get() = netplay != null && netStatus?.phase != com.dragonnes.emu.netplay.NetplaySession.Phase.ENDED
 
@@ -214,7 +219,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         }
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-            override fun handleOnBackPressed() = openMenu()
+            override fun handleOnBackPressed() {
+                if (showLobby) lobbyActions.closePanel() else openMenu()
+            }
         })
 
         // Game controls must stay left-to-right even when the phone language is Arabic.
@@ -281,7 +288,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             savedVideo?.let { uri -> SavedVideoBanner(uri, Modifier.align(Alignment.BottomCenter).padding(bottom = 60.dp)) }
 
             if (showLobby) {
-                NetplayPanel(lobby, netStatus?.takeIf { netActive }, onlineReady = relayUrl().isNotEmpty(), actions = lobbyActions)
+                NetplayPanel(lobby, netStatus?.takeIf { netActive }, onlineReady = relayUrl().isNotEmpty(), log = netLog, actions = lobbyActions)
             }
 
             message?.let {
@@ -761,6 +768,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 override fun resetCheats() { LibretroDroid.resetCheat() }
             },
             onStatus = { st -> runOnUiThread { onNetStatus(st) } },
+            onLog = { t -> runOnUiThread { netLogAdd(t) } },
         )
         netplay = session
         // Release anything held locally, then hand the controls to the lockstep engine.
@@ -796,6 +804,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             val host = com.dragonnes.emu.netplay.LanHost(this@GameActivity, playerName(), game.title)
             lanHost = host
             lobby = Lobby.HostingLan(com.dragonnes.emu.netplay.LanHost.localAddresses())
+            netLog = emptyList(); netLogAdd("استضافة على الشبكة: ${com.dragonnes.emu.netplay.LanHost.localAddresses().joinToString()}")
             host.start(lifecycleScope,
                 onGuest = { t -> runOnUiThread { lobby = Lobby.Connecting("صديقك دخل، جاري المزامنة…"); startSession(t, host = true) } },
                 onError = { e -> runOnUiThread { lobby = Lobby.Failed(e) } },
@@ -812,10 +821,11 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
         override fun joinLan(address: String) {
             lobby = Lobby.Connecting("جاري الاتصال بـ $address…")
+            netLog = emptyList(); netLogAdd("اتصال بـ $address")
             lifecycleScope.launch(safe) {
                 runCatching { com.dragonnes.emu.netplay.LanHost.connect(address) }
                     .onSuccess { t -> lobby = Lobby.Connecting("متصل، جاري المزامنة…"); startSession(t, host = false) }
-                    .onFailure { lobby = Lobby.Failed("ما كدرت أتصل بـ $address. تأكدوا إنكم على نفس الشبكة.") }
+                    .onFailure { netLogAdd("فشل: ${it.message}"); lobby = Lobby.Failed("ما كدرت أتصل بـ $address. تأكدوا إنكم على نفس الشبكة.") }
             }
         }
 

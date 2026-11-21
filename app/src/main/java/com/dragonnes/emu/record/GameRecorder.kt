@@ -53,14 +53,25 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
     private var muxerStarted = false
     private var expectedTracks = 2
 
-    // EGL (GL thread only)
+    // EGL / GL
     private var eglDisplay: EGLDisplay? = null
-    private var eglContext: EGLContext? = null
+    private var encoderContext: EGLContext? = null      // shares textures with the game's context
     private var encoderSurface: EGLSurface? = null
     private var inputSurface: Surface? = null
     private var outW = 0
     private var outH = 0
     private var lastFrameNs = 0L
+
+    /**
+     * The game thread only copies the picture into one of these textures (a cheap GPU blit, never
+     * waits for the encoder); the encoder thread draws it into the video. Frames are dropped,
+     * never queued up, when the encoder is busy, so recording can't slow the game down.
+     */
+    private class Slot(val texture: Int, val fbo: Int) { @Volatile var free = true }
+    private class Frame(val slot: Slot, val fence: Long, val ptsNs: Long)
+    private var slots: List<Slot> = emptyList()
+    private val frames = java.util.concurrent.LinkedBlockingQueue<Frame>()
+    private var encoderThread: Thread? = null
 
     private var audioThread: Thread? = null
     private var videoDrainThread: Thread? = null
@@ -138,53 +149,121 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
 
     private fun setupEgl() {
         val display = EGL14.eglGetCurrentDisplay()
-        val ctx = EGL14.eglGetCurrentContext()
-        check(display != EGL14.EGL_NO_DISPLAY && ctx != EGL14.EGL_NO_CONTEXT) { "no current EGL context" }
-        // Use the same config as the game's context, so the encoder surface is compatible with it.
-        val id = IntArray(1)
-        EGL14.eglQueryContext(display, ctx, EGL14.EGL_CONFIG_ID, id, 0)
+        val gameCtx = EGL14.eglGetCurrentContext()
+        check(display != EGL14.EGL_NO_DISPLAY && gameCtx != EGL14.EGL_NO_CONTEXT) { "no current EGL context" }
+        // Same config + client version as the game's context, so they can share textures.
+        val id = IntArray(1); val ver = IntArray(1)
+        EGL14.eglQueryContext(display, gameCtx, EGL14.EGL_CONFIG_ID, id, 0)
+        EGL14.eglQueryContext(display, gameCtx, EGL14.EGL_CONTEXT_CLIENT_VERSION, ver, 0)
         val configs = arrayOfNulls<EGLConfig>(1)
         val n = IntArray(1)
         EGL14.eglChooseConfig(display, intArrayOf(EGL14.EGL_CONFIG_ID, id[0], EGL14.EGL_NONE), 0, configs, 0, 1, n, 0)
+        val ctx = EGL14.eglCreateContext(display, configs[0], gameCtx,
+            intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, maxOf(ver[0], 3), EGL14.EGL_NONE), 0)
+        check(ctx != null && ctx != EGL14.EGL_NO_CONTEXT) { "encoder context: 0x" + Integer.toHexString(EGL14.eglGetError()) }
         val surface = EGL14.eglCreateWindowSurface(display, configs[0], inputSurface, intArrayOf(EGL14.EGL_NONE), 0)
         check(surface != null && surface != EGL14.EGL_NO_SURFACE) { "encoder surface: 0x" + Integer.toHexString(EGL14.eglGetError()) }
-        eglDisplay = display; eglContext = ctx; encoderSurface = surface
+        eglDisplay = display; encoderContext = ctx; encoderSurface = surface
+
+        // Copy targets, created in the game's context (textures are shared, framebuffers are not).
+        slots = List(3) {
+            val tex = IntArray(1); val fbo = IntArray(1)
+            GLES30.glGenTextures(1, tex, 0)
+            GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, tex[0])
+            GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RGBA, outW, outH, 0, GLES30.GL_RGBA, GLES30.GL_UNSIGNED_BYTE, null)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MIN_FILTER, GLES30.GL_LINEAR)
+            GLES30.glTexParameteri(GLES30.GL_TEXTURE_2D, GLES30.GL_TEXTURE_MAG_FILTER, GLES30.GL_LINEAR)
+            GLES30.glGenFramebuffers(1, fbo, 0)
+            GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, fbo[0])
+            GLES30.glFramebufferTexture2D(GLES30.GL_FRAMEBUFFER, GLES30.GL_COLOR_ATTACHMENT0, GLES30.GL_TEXTURE_2D, tex[0], 0)
+            Slot(tex[0], fbo[0])
+        }
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, 0)
     }
 
-    /** GL thread, after the game frame is drawn and before it is shown. */
+    /** Encoder thread: draws copied frames into the MediaCodec surface. */
+    private fun encoderLoop() {
+        val display = eglDisplay ?: return
+        val surface = encoderSurface ?: return
+        if (!EGL14.eglMakeCurrent(display, surface, surface, encoderContext)) return
+        val program = buildBlitProgram()
+        val quad = java.nio.ByteBuffer.allocateDirect(8 * 4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
+            .apply { put(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)); position(0) }
+        val posLoc = GLES30.glGetAttribLocation(program, "aPos")
+        val texLoc = GLES30.glGetUniformLocation(program, "uTex")
+        try {
+            while (true) {
+                val f = frames.poll(30, java.util.concurrent.TimeUnit.MILLISECONDS)
+                if (f == null) { if (!isRecording) break else continue }
+                GLES30.glWaitSync(f.fence, 0, GLES30.GL_TIMEOUT_IGNORED)
+                GLES30.glDeleteSync(f.fence)
+                GLES30.glViewport(0, 0, outW, outH)
+                GLES30.glUseProgram(program)
+                GLES30.glActiveTexture(GLES30.GL_TEXTURE0)
+                GLES30.glBindTexture(GLES30.GL_TEXTURE_2D, f.slot.texture)
+                GLES30.glUniform1i(texLoc, 0)
+                GLES30.glVertexAttribPointer(posLoc, 2, GLES30.GL_FLOAT, false, 0, quad)
+                GLES30.glEnableVertexAttribArray(posLoc)
+                GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
+                EGLExt.eglPresentationTimeANDROID(display, surface, f.ptsNs)
+                EGL14.eglSwapBuffers(display, surface)     // may wait for the encoder: fine on this thread
+                f.slot.free = true
+            }
+        } finally {
+            frames.clear()
+            GLES30.glDeleteProgram(program)
+            EGL14.eglMakeCurrent(display, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)
+            EGL14.eglDestroySurface(display, surface)
+            EGL14.eglDestroyContext(display, encoderContext)
+            encoderSurface = null; encoderContext = null
+        }
+    }
+
+    private fun buildBlitProgram(): Int {
+        fun shader(type: Int, src: String) = GLES30.glCreateShader(type).also {
+            GLES30.glShaderSource(it, src); GLES30.glCompileShader(it)
+        }
+        val vs = shader(GLES30.GL_VERTEX_SHADER,
+            "attribute vec2 aPos; varying vec2 vUv; void main(){ vUv = aPos * 0.5 + 0.5; gl_Position = vec4(aPos, 0.0, 1.0); }")
+        val fs = shader(GLES30.GL_FRAGMENT_SHADER,
+            "precision mediump float; uniform sampler2D uTex; varying vec2 vUv; void main(){ gl_FragColor = texture2D(uTex, vUv); }")
+        return GLES30.glCreateProgram().also {
+            GLES30.glAttachShader(it, vs); GLES30.glAttachShader(it, fs); GLES30.glLinkProgram(it)
+            GLES30.glDeleteShader(vs); GLES30.glDeleteShader(fs)
+        }
+    }
+
+    /** GL thread, after the game frame is drawn and before it is shown. Never blocks. */
     fun onFrameDrawn(screenW: Int, screenH: Int) {
         if (!isRecording) return
         val now = System.nanoTime()
         if (lastFrameNs != 0L && now - lastFrameNs < 15_000_000L) return  // cap ~60 fps on 90/120 Hz screens
+        val slot = slots.firstOrNull { it.free } ?: return                // encoder busy: drop this frame
         lastFrameNs = now
-        val display = eglDisplay ?: return
-        val enc = encoderSurface ?: return
-        val draw = EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW)
-        val read = EGL14.eglGetCurrentSurface(EGL14.EGL_READ)
-        try {
-            if (!EGL14.eglMakeCurrent(display, enc, draw, eglContext)) return
-            val r = LibretroDroid.getGameRect()
-            val x0 = (r[0] * screenW).toInt(); val y0 = (r[1] * screenH).toInt()
-            val x1 = (r[2] * screenW).toInt(); val y1 = (r[3] * screenH).toInt()
-            GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, 0)
-            GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, 0)
-            GLES30.glViewport(0, 0, outW, outH)
-            GLES30.glBlitFramebuffer(x0, y0, x1, y1, 0, 0, outW, outH, GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR)
-            EGLExt.eglPresentationTimeANDROID(display, enc, now - startNs)
-            EGL14.eglSwapBuffers(display, enc)
-        } finally {
-            EGL14.eglMakeCurrent(display, draw, read, eglContext)
-            GLES30.glViewport(0, 0, screenW, screenH)
-        }
+        slot.free = false
+        val r = LibretroDroid.getGameRect()
+        val x0 = (r[0] * screenW).toInt(); val y0 = (r[1] * screenH).toInt()
+        val x1 = (r[2] * screenW).toInt(); val y1 = (r[3] * screenH).toInt()
+        GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, 0)
+        GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, slot.fbo)
+        GLES30.glBlitFramebuffer(x0, y0, x1, y1, 0, 0, outW, outH, GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR)
+        GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        val fence = GLES30.glFenceSync(GLES30.GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
+        GLES30.glFlush()
+        frames.offer(Frame(slot, fence, now - startNs))
     }
 
     private fun startDrainThreads() {
+        encoderThread = thread(name = "rec-gl") {
+            runCatching { encoderLoop() }.onFailure { CrashReporter.crumb("rec gl: ${it.message}") }
+        }
         videoDrainThread = thread(name = "rec-video") {
             val codec = videoCodec ?: return@thread
-            drain(codec, isVideo = true)
+            runCatching { drain(codec, isVideo = true) }.onFailure { CrashReporter.crumb("rec video: ${it.message}") }
         }
         audioCodec?.let { codec ->
-            audioThread = thread(name = "rec-audio") {
+            audioThread = thread(name = "rec-audio") { runCatching {
                 val pcm = ShortArray(4096)
                 var samplesWritten = 0L
                 val info = MediaCodec.BufferInfo()
@@ -199,7 +278,8 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
                                 val buf = codec.getInputBuffer(idx)!!
                                 buf.clear()
                                 val count = minOf(n, buf.capacity() / 2)
-                                for (i in 0 until count) buf.putShort(pcm[i])
+                                // PCM for MediaCodec is little-endian (ByteBuffer defaults to big-endian).
+                                buf.order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(pcm, 0, count)
                                 val ptsUs = samplesWritten * 1_000_000L / (sampleRate * 2)
                                 samplesWritten += count
                                 codec.queueInputBuffer(idx, 0, count * 2, ptsUs,
@@ -210,7 +290,7 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
                     }
                     if (drainOnce(codec, info, isVideo = false)) break
                 }
-            }
+            }.onFailure { CrashReporter.crumb("rec audio: ${it.message}") } }
         }
     }
 
@@ -239,7 +319,7 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
                     while (!muxerStarted && waited < 20) { muxLock.wait(50); waited++ }
                     if (muxerStarted) {
                         buf.position(info.offset); buf.limit(info.offset + info.size)
-                        muxer?.writeSampleData(if (isVideo) videoTrack else audioTrack, buf, info)
+                        runCatching { muxer?.writeSampleData(if (isVideo) videoTrack else audioTrack, buf, info) }
                     }
                 }
                 codec.releaseOutputBuffer(idx, false)
@@ -257,10 +337,11 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
         if (!isRecording) return
         isRecording = false
         LibretroDroid.setAudioCapture(false)
-        eglDisplay?.let { d -> encoderSurface?.let { EGL14.eglDestroySurface(d, it) } }
-        encoderSurface = null
+        val oldSlots = slots
+        slots = emptyList()
         thread(name = "rec-finish") {
             val uri = runCatching {
+                encoderThread?.join(3000)               // draws the last frames, then frees its EGL objects
                 videoCodec?.signalEndOfInputStream()
                 videoDrainThread?.join(3000)
                 audioThread?.join(3000)
@@ -269,6 +350,11 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
                 if (muxerStarted) publish() else null
             }.getOrElse { CrashReporter.crumb("rec stop failed: ${it.message}"); releaseAll(); null }
             onSaved(uri)
+        }
+        // Copy targets belong to the game's context: delete them here, on the GL thread.
+        oldSlots.forEach {
+            GLES30.glDeleteFramebuffers(1, intArrayOf(it.fbo), 0)
+            GLES30.glDeleteTextures(1, intArrayOf(it.texture), 0)
         }
     }
 

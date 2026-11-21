@@ -34,6 +34,7 @@ class NetplaySession(
     private val playerName: String,
     private val engine: Engine,
     private val onStatus: (Status) -> Unit,
+    private val onLog: (String) -> Unit = {},
 ) {
     /** Emulator access, called on the GL thread. */
     interface Engine {
@@ -92,6 +93,7 @@ class NetplaySession(
                 delay(1000)
             }
         }
+        log(if (isHost) "مضيف: صديقك اتصل، بانتظار التعارف" else "منضم: متصل، أرسلت التعارف")
         if (!isHost) sendHello()
     }
 
@@ -118,11 +120,20 @@ class NetplaySession(
 
     private fun publish(s: Status) { status = s; onStatus(s) }
 
+    private fun log(text: String) { CrashReporter.crumb("netplay: $text"); onLog(text) }
+
     // ---------------- network ----------------
 
     private suspend fun receiveLoop() {
         for (bytes in transport.incoming) {
             val msg = Protocol.decode(bytes) ?: continue
+            when (msg) {
+                is Msg.Hello -> log("وصل تعارف من ${msg.name}")
+                is Msg.Start -> log("وصلت حالة اللعبة (${msg.state.size / 1024}KB)")
+                is Msg.Ready -> log("صديقك جاهز")
+                is Msg.Error -> log("خطأ: ${msg.reason}")
+                else -> {}
+            }
             when (msg) {
                 is Msg.Hello -> onHello(msg)
                 is Msg.Start -> if (!isHost) { pendingStart = msg; publish(status.copy(phase = Phase.SYNCING)) }
@@ -180,8 +191,16 @@ class NetplaySession(
 
     // ---------------- emulation thread ----------------
 
-    /** Lockstep gate: return true to emulate this frame now. */
-    fun beforeFrame(): Boolean {
+    /** Lockstep gate: return true to emulate this frame now. Never throws (called from native code). */
+    fun beforeFrame(): Boolean = try {
+        gate()
+    } catch (e: Throwable) {
+        CrashReporter.crumb("netplay gate error: ${e.javaClass.simpleName}: ${e.message}")
+        end("خطأ بالمزامنة: ${e.javaClass.simpleName}")
+        true
+    }
+
+    private fun gate(): Boolean {
         if (status.phase == Phase.ENDED) return true
         if (isHost && hostNeedsStart) { hostNeedsStart = false; beginEpochAsHost(); return false }
         pendingStart?.let { pendingStart = null; beginEpochAsGuest(it); return false }
@@ -240,28 +259,31 @@ class NetplaySession(
     }
 
     private fun beginEpochAsHost() {
-        val state = engine.serializeState()
+        val state = runCatching { engine.serializeState() }.getOrNull()
+        if (state == null || state.isEmpty()) { fail("تعذر حفظ حالة اللعبة للمزامنة"); return }
         epoch++
         resetLockstep()
         awaitingReadyEpoch = epoch
         running = false
-        CrashReporter.crumb("netplay start epoch=$epoch delay=$delay batch=$batch state=${state.size}")
+        log("أرسلت حالة اللعبة (${state.size / 1024}KB) تأخير=$delay")
         transport.send(Protocol.encode(Msg.Start(epoch, delay, batch, state)))
         publish(status.copy(phase = Phase.SYNCING, delayFrames = delay, note = "جاري المزامنة…"))
     }
 
     private fun beginEpochAsGuest(s: Msg.Start) {
-        if (!engine.unserializeState(s.state)) { fail("تعذر تحميل حالة اللعبة من المضيف"); return }
+        val ok = runCatching { engine.unserializeState(s.state) }.getOrDefault(false)
+        if (!ok) { fail("تعذر تحميل حالة اللعبة من المضيف"); return }
         epoch = s.epoch; delay = s.delay; batch = s.batch
         resetLockstep()
         running = true
         transport.send(Protocol.encode(Msg.Ready(epoch)))
-        CrashReporter.crumb("netplay joined epoch=$epoch delay=$delay batch=$batch")
+        log("حمّلت حالة اللعبة، بدينا")
         publish(status.copy(phase = Phase.PLAYING, delayFrames = delay, note = null))
     }
 
     private fun sendCheck(f: Int) {
-        val crc = CRC32().apply { update(engine.serializeState()) }.value.toInt()
+        val bytes = runCatching { engine.serializeState() }.getOrNull() ?: return
+        val crc = CRC32().apply { update(bytes) }.value.toInt()
         myChecks[f] = crc
         transport.send(Protocol.encode(Msg.Check(epoch, f, crc)))
         compareCheck(f)

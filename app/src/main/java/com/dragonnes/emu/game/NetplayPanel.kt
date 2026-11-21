@@ -58,12 +58,13 @@ interface LobbyActions {
 
 /** Netplay lobby shown above the game (RTL, Arabic). */
 @Composable
-fun NetplayPanel(lobby: Lobby, status: NetplaySession.Status?, onlineReady: Boolean, actions: LobbyActions) {
+fun NetplayPanel(lobby: Lobby, status: NetplaySession.Status?, onlineReady: Boolean, log: List<String>, actions: LobbyActions) {
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Box(
             Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.72f))
-                // Swallow touches so the game buttons underneath don't react.
-                .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Final).changes.forEach { it.consume() } } },
+                // Claim touches (without consuming them) so the game buttons underneath never get them,
+                // while the panel's own buttons still work.
+                .pointerInput(Unit) { awaitPointerEventScope { while (true) awaitPointerEvent() } },
             contentAlignment = Alignment.Center,
         ) {
             NeonPanel(Modifier.widthIn(max = 520.dp).fillMaxWidth(0.92f).fillMaxHeight(0.92f), glow = true) {
@@ -92,6 +93,12 @@ fun NetplayPanel(lobby: Lobby, status: NetplaySession.Status?, onlineReady: Bool
                         is Lobby.Failed -> {
                             Text(lobby.text, color = Neon.Magenta, fontSize = 15.sp, fontWeight = FontWeight.Bold)
                             OutlinedButton(actions::cancelLobby) { Text("رجوع", color = Neon.Cyan) }
+                        }
+                    }
+                    if (log.isNotEmpty()) {
+                        Text("سجل الاتصال", color = Neon.TextDim, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                            Text(log.takeLast(8).joinToString("\n"), color = Neon.TextDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                         }
                     }
                 }
@@ -220,7 +227,12 @@ private fun JoinOnline(a: LobbyActions) {
 
 @Composable
 private fun SessionInfo(s: NetplaySession.Status, a: LobbyActions) {
-    Text("متصل ${s.label}", color = Neon.Cyan, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+    val phase = when (s.phase) {
+        NetplaySession.Phase.HANDSHAKE -> "متصل (${s.label}) • جاري التعارف…"
+        NetplaySession.Phase.SYNCING -> "متصل (${s.label}) • ${s.note ?: "جاري المزامنة…"}"
+        else -> "تلعبون سوية (${s.label}) 🎮"
+    }
+    Text(phase, color = Neon.Cyan, fontWeight = FontWeight.Bold, fontSize = 16.sp)
     s.peerName?.let { Text("ويه: $it", color = Neon.Text) }
     Text(
         listOfNotNull(
