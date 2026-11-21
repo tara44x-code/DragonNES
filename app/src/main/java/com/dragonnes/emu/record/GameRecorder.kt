@@ -35,6 +35,8 @@ import kotlin.concurrent.thread
  * The touch buttons are Compose views above the GL surface, so they are never in the video.
  * Audio: the engine copies the core's PCM samples into a buffer that we encode to AAC.
  */
+private const val EGL_RECORDABLE_ANDROID = 0x3142
+
 class GameRecorder(private val context: Context, private val gameTitle: String) {
 
     @Volatile var isRecording = false
@@ -73,6 +75,14 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
     private val frames = java.util.concurrent.LinkedBlockingQueue<Frame>()
     private var encoderThread: Thread? = null
 
+    // ---- diagnostics (shown when saving fails) ----
+    @Volatile private var framesCopied = 0
+    @Volatile private var framesEncoded = 0
+    @Volatile private var problem: String? = null
+    private fun diag(text: String) { CrashReporter.crumb("rec: $text"); if (problem == null) problem = text }
+    /** Short reason of the last failure, for the message shown to the player. */
+    val lastProblem: String get() = "${problem ?: "?"} (نسخ=$framesCopied، ترميز=$framesEncoded)"
+
     private var audioThread: Thread? = null
     private var videoDrainThread: Thread? = null
     private var sampleRate = 48000
@@ -108,6 +118,7 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
             expectedTracks = if (setupAudio()) 2 else 1
             startNs = System.nanoTime()
             lastFrameNs = 0L
+            framesCopied = 0; framesEncoded = 0; problem = null
             isRecording = true
             startDrainThreads()
             CrashReporter.crumb("rec start ${outW}x$outH audio=$sampleRate tracks=$expectedTracks")
@@ -157,7 +168,19 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
         EGL14.eglQueryContext(display, gameCtx, EGL14.EGL_CONTEXT_CLIENT_VERSION, ver, 0)
         val configs = arrayOfNulls<EGLConfig>(1)
         val n = IntArray(1)
-        EGL14.eglChooseConfig(display, intArrayOf(EGL14.EGL_CONFIG_ID, id[0], EGL14.EGL_NONE), 0, configs, 0, 1, n, 0)
+        // The encoder needs a "recordable" config (EGL_RECORDABLE_ANDROID), otherwise MediaCodec may
+        // silently never receive frames. Contexts with different configs can still share textures.
+        val recordable = intArrayOf(
+            EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8,
+            EGL14.EGL_RENDERABLE_TYPE, EGLExt.EGL_OPENGL_ES3_BIT_KHR,
+            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
+            EGL_RECORDABLE_ANDROID, 1,
+            EGL14.EGL_NONE,
+        )
+        if (!EGL14.eglChooseConfig(display, recordable, 0, configs, 0, 1, n, 0) || n[0] == 0 || configs[0] == null) {
+            EGL14.eglChooseConfig(display, intArrayOf(EGL14.EGL_CONFIG_ID, id[0], EGL14.EGL_NONE), 0, configs, 0, 1, n, 0)
+            diag("no recordable config, using game config")
+        }
         val ctx = EGL14.eglCreateContext(display, configs[0], gameCtx,
             intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, maxOf(ver[0], 3), EGL14.EGL_NONE), 0)
         check(ctx != null && ctx != EGL14.EGL_NO_CONTEXT) { "encoder context: 0x" + Integer.toHexString(EGL14.eglGetError()) }
@@ -186,7 +209,9 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
     private fun encoderLoop() {
         val display = eglDisplay ?: return
         val surface = encoderSurface ?: return
-        if (!EGL14.eglMakeCurrent(display, surface, surface, encoderContext)) return
+        if (!EGL14.eglMakeCurrent(display, surface, surface, encoderContext)) {
+            diag("encoder makeCurrent 0x" + Integer.toHexString(EGL14.eglGetError())); return
+        }
         val program = buildBlitProgram()
         val quad = java.nio.ByteBuffer.allocateDirect(8 * 4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer()
             .apply { put(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)); position(0) }
@@ -207,7 +232,8 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
                 GLES30.glEnableVertexAttribArray(posLoc)
                 GLES30.glDrawArrays(GLES30.GL_TRIANGLE_STRIP, 0, 4)
                 EGLExt.eglPresentationTimeANDROID(display, surface, f.ptsNs)
-                EGL14.eglSwapBuffers(display, surface)     // may wait for the encoder: fine on this thread
+                if (!EGL14.eglSwapBuffers(display, surface)) diag("swap 0x" + Integer.toHexString(EGL14.eglGetError()))
+                else framesEncoded++
                 f.slot.free = true
             }
         } finally {
@@ -248,7 +274,10 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
         GLES30.glBindFramebuffer(GLES30.GL_READ_FRAMEBUFFER, 0)
         GLES30.glBindFramebuffer(GLES30.GL_DRAW_FRAMEBUFFER, slot.fbo)
         GLES30.glBlitFramebuffer(x0, y0, x1, y1, 0, 0, outW, outH, GLES30.GL_COLOR_BUFFER_BIT, GLES30.GL_LINEAR)
+        val err = GLES30.glGetError()
+        if (err != GLES30.GL_NO_ERROR) diag("blit 0x" + Integer.toHexString(err))
         GLES30.glBindFramebuffer(GLES30.GL_FRAMEBUFFER, 0)
+        framesCopied++
         val fence = GLES30.glFenceSync(GLES30.GL_SYNC_GPU_COMMANDS_COMPLETE, 0)
         GLES30.glFlush()
         frames.offer(Frame(slot, fence, now - startNs))
@@ -256,11 +285,11 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
 
     private fun startDrainThreads() {
         encoderThread = thread(name = "rec-gl") {
-            runCatching { encoderLoop() }.onFailure { CrashReporter.crumb("rec gl: ${it.message}") }
+            runCatching { encoderLoop() }.onFailure { diag("gl: ${it.javaClass.simpleName} ${it.message}") }
         }
         videoDrainThread = thread(name = "rec-video") {
             val codec = videoCodec ?: return@thread
-            runCatching { drain(codec, isVideo = true) }.onFailure { CrashReporter.crumb("rec video: ${it.message}") }
+            runCatching { drain(codec, isVideo = true) }.onFailure { diag("video: ${it.javaClass.simpleName} ${it.message}") }
         }
         audioCodec?.let { codec ->
             audioThread = thread(name = "rec-audio") { runCatching {
@@ -290,7 +319,7 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
                     }
                     if (drainOnce(codec, info, isVideo = false)) break
                 }
-            }.onFailure { CrashReporter.crumb("rec audio: ${it.message}") } }
+            }.onFailure { diag("audio: ${it.javaClass.simpleName} ${it.message}") } }
         }
     }
 
@@ -347,8 +376,9 @@ class GameRecorder(private val context: Context, private val gameTitle: String) 
                 audioThread?.join(3000)
                 synchronized(muxLock) { if (muxerStarted) muxer?.stop() }
                 releaseAll()
-                if (muxerStarted) publish() else null
-            }.getOrElse { CrashReporter.crumb("rec stop failed: ${it.message}"); releaseAll(); null }
+                if (!muxerStarted) diag("muxer never started (video=$videoTrack audio=$audioTrack)")
+                if (muxerStarted) runCatching { publish() }.getOrElse { diag("save: ${it.javaClass.simpleName} ${it.message}"); null } else null
+            }.getOrElse { diag("stop: ${it.javaClass.simpleName} ${it.message}"); releaseAll(); null }
             onSaved(uri)
         }
         // Copy targets belong to the game's context: delete them here, on the GL thread.

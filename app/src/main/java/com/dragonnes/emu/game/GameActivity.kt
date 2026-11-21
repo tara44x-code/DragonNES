@@ -315,7 +315,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                         .clip(RoundedCornerShape(12.dp)).background(Neon.Surface.copy(alpha = 0.9f))
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                 )
-                LaunchedEffect(it) { delay(2200); message = null }
+                LaunchedEffect(it) { delay(2200L + it.length * 35L); message = null }
             }
         }
     }
@@ -739,7 +739,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 recorder.stopOnGlThread { uri ->
                     runOnUiThread {
                         if (uri != null) { savedVideo = uri; message = "🎬 انحفظ الفيديو بالمعرض (Movies/DragonNES)" }
-                        else message = "تعذر حفظ الفيديو"
+                        else message = "تعذر حفظ الفيديو: ${recorder.lastProblem}"
                     }
                 }
             }
