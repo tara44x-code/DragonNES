@@ -70,6 +70,8 @@ class GameMenuActivity : ComponentActivity() {
         const val ACTION_QUIT = "quit"
         const val ACTION_TOUCH = "touch"
         const val ACTION_SWAP_PLAYERS = "swap_players"
+        const val ACTION_RECORD = "record"
+        const val ACTION_NETPLAY = "netplay"
         const val SLOTS = 4
 
         fun intent(context: Context, game: Game) =
@@ -139,6 +141,10 @@ class GameMenuActivity : ComponentActivity() {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 MenuButton("استئناف", Icons.Default.PlayArrow, Modifier.weight(1f)) { finishWith(null) }
                 MenuButton("الجيتات", Icons.Default.AutoFixHigh, Modifier.weight(1f), onCheats)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                MenuButton("🌐 لعب أونلاين", Icons.Default.Public, Modifier.weight(1f)) { finishWith(ACTION_NETPLAY) }
+                MenuButton("تسجيل فيديو", Icons.Default.Videocam, Modifier.weight(1f)) { finishWith(ACTION_RECORD) }
             }
 
             Text("الحفظ والتحميل", color = Neon.Cyan, fontWeight = FontWeight.Bold)

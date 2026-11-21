@@ -171,6 +171,16 @@ class Settings(context: Context) {
         com.swordfish.libretrodroid.Variable("fceumm_ntsc_filter", ntsc.value),
     )
 
+    // ---- Online play ----
+    /** Optional relay server override (empty = the one built into the app). */
+    var relayUrl: String
+        get() = p.getString("relayUrl", "") ?: ""
+        set(v) = p.edit().putString("relayUrl", v.trim()).apply()
+
+    var playerName: String
+        get() = p.getString("playerName", null)?.takeIf { it.isNotBlank() } ?: android.os.Build.MODEL
+        set(v) = p.edit().putString("playerName", v.trim().take(24)).apply()
+
     /** Swap the A and B buttons (touch and controllers). */
     var swapAB: Boolean
         get() = p.getBoolean("swapAB", false)
