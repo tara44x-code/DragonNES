@@ -170,7 +170,14 @@ private fun GameCard(game: Game, modifier: Modifier = Modifier, onClick: () -> U
                 contentDescription = game.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
-                error = { CoverFallback(game) },
+                // Second source (GitHub) if the libretro server doesn't answer, then the title card.
+                error = {
+                    SubcomposeAsyncImage(
+                        model = game.coverUrl2, contentDescription = game.title, contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                        error = { CoverFallback(game) }, loading = { CoverFallback(game) },
+                    )
+                },
                 loading = { CoverFallback(game) },
             )
             Text(

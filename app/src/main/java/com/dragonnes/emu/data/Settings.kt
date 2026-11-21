@@ -181,11 +181,6 @@ class Settings(context: Context) {
         get() = p.getString("playerName", null)?.takeIf { it.isNotBlank() } ?: android.os.Build.MODEL
         set(v) = p.edit().putString("playerName", v.trim().take(24)).apply()
 
-    /** Home screen: classic grid instead of the console carousel. */
-    var homeGrid: Boolean
-        get() = p.getBoolean("homeGrid", false)
-        set(v) = p.edit().putBoolean("homeGrid", v).apply()
-
     /** Touch controls layout (positions + sizes), see PadLayout. */
     var padLayout: String?
         get() = p.getString("padLayout", null)

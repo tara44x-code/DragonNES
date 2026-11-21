@@ -49,13 +49,6 @@ class MainActivity : ComponentActivity() {
 
     private var crashReport by mutableStateOf<String?>(null)
 
-    /** Controllers browse the home carousel (◀ ▶, A / START to play). */
-    override fun dispatchKeyEvent(event: android.view.KeyEvent): Boolean {
-        if (event.action == android.view.KeyEvent.ACTION_DOWN && event.repeatCount == 0 &&
-            com.dragonnes.emu.ui.HomeKeys.handler?.invoke(event.keyCode) == true) return true
-        return super.dispatchKeyEvent(event)
-    }
-
     override fun onStart() {
         super.onStart()
         vm.autoScan() // new games copied into the folder show up automatically
@@ -99,21 +92,13 @@ class MainActivity : ComponentActivity() {
                             androidx.compose.ui.Modifier.fillMaxSize().background(Neon.Bg)
                         ) { SettingsScreen(vm, onBack = { showSettings = false }) }
                     } else {
-                        var grid by rememberSaveable { mutableStateOf(vm.settings.homeGrid) }
-                        BackHandler(enabled = grid) { grid = false; vm.settings.homeGrid = false }
-                        val play: (com.dragonnes.emu.data.Game) -> Unit = { game ->
-                            vm.play(game) { g, rom, resume -> GameActivity.start(this@MainActivity, g, rom, resume) }
-                        }
-                        if (grid) {
-                            LibraryScreen(vm = vm, onOpenSettings = { showSettings = true }, onPlay = play)
-                        } else {
-                            com.dragonnes.emu.ui.ArcadeHome(
-                                vm = vm,
-                                onOpenSettings = { showSettings = true },
-                                onGridView = { grid = true; vm.settings.homeGrid = true },
-                                onPlay = play,
-                            )
-                        }
+                        LibraryScreen(
+                            vm = vm,
+                            onOpenSettings = { showSettings = true },
+                            onPlay = { game ->
+                                vm.play(game) { g, rom, resume -> GameActivity.start(this@MainActivity, g, rom, resume) }
+                            },
+                        )
                     }
                 }
             }

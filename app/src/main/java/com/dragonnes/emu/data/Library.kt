@@ -30,6 +30,7 @@ data class Game(
     val title: String get() = dbName ?: fileTitle
     val romExtension: String get() = (innerName ?: fileName).substringAfterLast('.').lowercase()
     val coverUrl: String? get() = (coverName ?: dbName)?.let { LibretroUrls.boxartUrl(system, it) }
+    val coverUrl2: String? get() = (coverName ?: dbName)?.let { LibretroUrls.boxartUrlGithub(system, it) }
 
     fun toJson() = JSONObject().apply {
         put("uri", uri); put("fileName", fileName); put("innerName", innerName ?: "")

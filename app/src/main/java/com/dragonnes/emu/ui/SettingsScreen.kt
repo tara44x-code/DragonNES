@@ -185,6 +185,36 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
             ) { Text("تحديث من الإنترنت", color = Neon.Cyan) }
         }
 
+        Section("فحص صور الألعاب") {
+            val scope = rememberCoroutineScope()
+            var report by remember { mutableStateOf<String?>(null) }
+            Text("إذا الأغلفة ما تطلع، اضغط فحص وصوّر النتيجة للمطوّر", color = Neon.TextDim, fontSize = 12.sp)
+            OutlinedButton(onClick = {
+                report = "جاري الفحص…"
+                scope.launch {
+                    report = withContext(Dispatchers.IO) {
+                        fun probe(url: String?): String = if (url == null) "—" else runCatching {
+                            val c = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                            c.connectTimeout = 8000; c.readTimeout = 8000; c.instanceFollowRedirects = true
+                            c.setRequestProperty("User-Agent", "DragonNES")
+                            val code = c.responseCode; c.disconnect(); code.toString()
+                        }.getOrElse { it.javaClass.simpleName + ": " + (it.message ?: "") }
+                        val sample = vm.games.take(4)
+                        if (sample.isEmpty()) "ماكو ألعاب بالمكتبة"
+                        else sample.joinToString("\n\n") { g ->
+                            "${g.fileName}\nاسم: ${g.dbName ?: "غير معروف"}\nغلاف: ${g.coverName ?: "ما لكيت"}\n" +
+                                "libretro=${probe(g.coverUrl)}  github=${probe(g.coverUrl2)}"
+                        }
+                    }
+                }
+            }, modifier = Modifier.fillMaxWidth()) { Text("فحص", color = Neon.Cyan) }
+            report?.let {
+                androidx.compose.runtime.CompositionLocalProvider(
+                    androidx.compose.ui.platform.LocalLayoutDirection provides androidx.compose.ui.unit.LayoutDirection.Ltr
+                ) { Text(it, color = Neon.Text, fontSize = 11.sp) }
+            }
+        }
+
         Section("حول") {
             Text("تطوير: مهند سات لنك", color = Neon.Text, fontSize = 15.sp, fontWeight = FontWeight.Bold)
             Text("DragonNES v${com.dragonnes.emu.BuildConfig.VERSION_NAME}", color = Neon.TextDim, fontSize = 12.sp)

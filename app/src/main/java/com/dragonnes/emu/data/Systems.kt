@@ -29,6 +29,13 @@ object LibretroUrls {
     fun cheatUrl(system: GameSystem, gameName: String) =
         "$DB_RAW/cht/${Uri.encode(system.dbName)}/${Uri.encode(gameName)}.cht"
 
+    /** Same picture straight from the libretro-thumbnails GitHub repository (fallback source). */
+    fun boxartUrlGithub(system: GameSystem, gameName: String): String {
+        val safe = gameName.replace(Regex("[&*/:`<>?\\\\|\"]"), "_")
+        val repo = system.dbName.replace(" ", "_")
+        return "https://raw.githubusercontent.com/libretro-thumbnails/${Uri.encode(repo)}/master/Named_Boxarts/${Uri.encode(safe)}.png"
+    }
+
     /** libretro-thumbnails replaces these characters with '_' in file names. */
     fun boxartUrl(system: GameSystem, gameName: String): String {
         val safe = gameName.replace(Regex("[&*/:`<>?\\\\|\"]"), "_")
