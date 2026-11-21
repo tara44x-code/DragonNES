@@ -71,6 +71,7 @@ class GameMenuActivity : ComponentActivity() {
         const val ACTION_TOUCH = "touch"
         const val ACTION_SWAP_PLAYERS = "swap_players"
         const val ACTION_RECORD = "record"
+        const val ACTION_EDIT_LAYOUT = "edit_layout"
         const val ACTION_NETPLAY = "netplay"
         const val SLOTS = 4
 
@@ -144,7 +145,7 @@ class GameMenuActivity : ComponentActivity() {
             }
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 MenuButton("🌐 لعب أونلاين", Icons.Default.Public, Modifier.weight(1f)) { finishWith(ACTION_NETPLAY) }
-                MenuButton("تسجيل فيديو", Icons.Default.Videocam, Modifier.weight(1f)) { finishWith(ACTION_RECORD) }
+                MenuButton("أماكن الأزرار", Icons.Default.OpenWith, Modifier.weight(1f)) { finishWith(ACTION_EDIT_LAYOUT) }
             }
 
             Text("الحفظ والتحميل", color = Neon.Cyan, fontWeight = FontWeight.Bold)

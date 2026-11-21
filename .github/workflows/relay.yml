@@ -10,18 +10,19 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      HAS_CF: ${{ secrets.CLOUDFLARE_API_TOKEN != '' && secrets.CLOUDFLARE_ACCOUNT_ID != '' }}
+      HAS_CF: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Cloudflare secrets missing
         if: env.HAS_CF != 'true'
-        run: echo "::warning::Add CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets to deploy the online relay."
+        run: |
+          echo "::error::Secret CLOUDFLARE_API_TOKEN is missing (check the exact name) — the relay was not deployed."
+          exit 1
 
       - name: Deploy relay to Cloudflare Workers
         if: env.HAS_CF == 'true'
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: relay

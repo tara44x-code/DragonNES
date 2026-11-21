@@ -4,6 +4,8 @@ name = "dragonnes-relay"
 main = "src/index.js"
 compatibility_date = "2024-11-01"
 workers_dev = true
+# Account ID is not secret (it only identifies the account); the API token is.
+account_id = "a9eb152cef59ed335dad16fa355f93c9"
 
 [[durable_objects.bindings]]
 name = "ROOMS"

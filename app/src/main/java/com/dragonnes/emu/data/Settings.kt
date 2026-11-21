@@ -181,6 +181,11 @@ class Settings(context: Context) {
         get() = p.getString("playerName", null)?.takeIf { it.isNotBlank() } ?: android.os.Build.MODEL
         set(v) = p.edit().putString("playerName", v.trim().take(24)).apply()
 
+    /** Touch controls layout (positions + sizes), see PadLayout. */
+    var padLayout: String?
+        get() = p.getString("padLayout", null)
+        set(v) = p.edit().putString("padLayout", v).apply()
+
     /** Swap the A and B buttons (touch and controllers). */
     var swapAB: Boolean
         get() = p.getBoolean("swapAB", false)

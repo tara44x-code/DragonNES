@@ -21,18 +21,19 @@ data class Game(
     val dbName: String?,      // official No-Intro name, if identified
     val lastPlayed: Long = 0L,
     val headerName: String? = null, // name stored inside the cartridge header
+    val coverName: String? = null,  // closest official name, used only for the cover picture
 ) {
     /** File name without extension / tags, e.g. "Earthworm Jim (U) [!].bin" -> "Earthworm Jim" */
     val fileTitle: String get() = TitleMatch.base(innerName ?: fileName)
 
     val title: String get() = dbName ?: fileTitle
     val romExtension: String get() = (innerName ?: fileName).substringAfterLast('.').lowercase()
-    val coverUrl: String? get() = dbName?.let { LibretroUrls.boxartUrl(system, it) }
+    val coverUrl: String? get() = (dbName ?: coverName)?.let { LibretroUrls.boxartUrl(system, it) }
 
     fun toJson() = JSONObject().apply {
         put("uri", uri); put("fileName", fileName); put("innerName", innerName ?: "")
         put("system", system.name); put("crc", crc); put("dbName", dbName ?: "")
-        put("lastPlayed", lastPlayed); put("headerName", headerName ?: "")
+        put("lastPlayed", lastPlayed); put("headerName", headerName ?: ""); put("coverName", coverName ?: "")
     }
 
     companion object {
@@ -45,6 +46,7 @@ data class Game(
             dbName = o.optString("dbName").ifEmpty { null },
             lastPlayed = o.optLong("lastPlayed"),
             headerName = o.optString("headerName").ifEmpty { null },
+            coverName = o.optString("coverName").ifEmpty { null },
         )
     }
 }
@@ -125,7 +127,8 @@ class LibraryRepository(private val context: Context) {
         val shownName = inner ?: fileName
         val hints = listOfNotNull(TitleMatch.base(shownName), header?.name)
         val dbName = db.identify(system, crcs, header?.serial, hints, TitleMatch.tags(shownName))
-        return Game(uri.toString(), fileName, inner, system, crc, dbName, headerName = header?.name)
+        val coverName = if (dbName == null) db.closest(system, hints, TitleMatch.tags(shownName)) else null
+        return Game(uri.toString(), fileName, inner, system, crc, dbName, headerName = header?.name, coverName = coverName)
     }
 
     /**

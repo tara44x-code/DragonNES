@@ -28,11 +28,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 object Neon {
-    val Bg = Color(0xFF0C0705)
-    val Surface = Color(0xFF1A0F0A)
-    val SurfaceHi = Color(0xFF2A1810)
-    val Text = Color(0xFFFFF1E2)
-    val TextDim = Color(0xFFC7A88E)
+    // Backgrounds, panels and text are tinted by the chosen theme too, so the whole app changes
+    // colour (not only buttons and borders). Computed from [ui], which is state-backed.
+    private fun tint(base: Color, t: Float, amount: Float) = androidx.compose.ui.graphics.lerp(base, ui.sample(t), amount)
+    val Bg: Color get() = tint(Color(0xFF050505), 0.85f, 0.07f)
+    val Surface: Color get() = tint(Color(0xFF0E0E0E), 0.7f, 0.13f)
+    val SurfaceHi: Color get() = tint(Color(0xFF181818), 0.55f, 0.20f)
+    val Text: Color get() = tint(Color(0xFFF7F7F7), 0.1f, 0.10f)
+    val TextDim: Color get() = tint(Color(0xFFA0A0A0), 0.3f, 0.35f)
 
     /** Interface palette (Settings ▸ الثيم). State-backed, so changing it recolours the app live. */
     var ui by mutableStateOf(NeonPalette.default)

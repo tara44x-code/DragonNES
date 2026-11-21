@@ -127,6 +127,12 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     private var lastSram: ByteArray? = null
     private var padMap: Map<Int, PadTarget> = emptyMap()
 
+    // ---- Touch layout editor ----
+    private var padLayout by mutableStateOf(PadLayout.DEFAULT)
+    private var editingLayout by mutableStateOf(false)
+    private var editSelected by mutableStateOf<PadPart?>(null)
+    private var layoutBeforeEdit = PadLayout.DEFAULT
+
     // ---- Video recording ----
     private lateinit var recorder: com.dragonnes.emu.record.GameRecorder
     private var recording by mutableStateOf(false)
@@ -178,6 +184,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         cheats = CheatRepository(this)
         rewindEnabled = settings.rewind ?: profile.rewindByDefault
         aspect = settings.aspect
+        padLayout = PadLayout.decode(settings.padLayout)
         padMap = settings.padMap
         wideCore = usesWideCore(settings, game)
 
@@ -220,7 +227,8 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
-                if (showLobby) lobbyActions.closePanel() else openMenu()
+                if (editingLayout) { padLayout = layoutBeforeEdit; editingLayout = false }
+                else if (showLobby) lobbyActions.closePanel() else openMenu()
             }
         })
 
@@ -236,7 +244,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     @Composable
     private fun GameScreen() {
-        val showTouch = touchOverride ?: when (settings.touchMode) {
+        val showTouch = editingLayout || touchOverride ?: when (settings.touchMode) {
             TouchMode.AUTO -> gamepadName == null
             TouchMode.ALWAYS -> true
             TouchMode.HIDDEN -> false
@@ -270,6 +278,11 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                     onDpad = { x, y -> if (coreReady) sendDpad(x, y) },
                     recording = recording,
                     onRecord = ::toggleRecording,
+                    layout = padLayout,
+                    editing = editingLayout,
+                    selected = editSelected,
+                    onSelect = { editSelected = it },
+                    onMove = { part, pos -> padLayout = padLayout.with(part, pos) },
                     onMenu = ::openMenu,
                     onToggleFastForward = ::toggleFastForward,
                     onRewind = ::setRewinding,
@@ -283,6 +296,7 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
                 ) { Icon(Icons.Default.Menu, "القائمة", tint = Neon.Cyan, modifier = Modifier.size(18.dp)) }
             }
 
+            if (editingLayout) LayoutEditorBar(Modifier.align(Alignment.Center))
             if (recording) RecordingBadge(Modifier.align(Alignment.TopStart).padding(start = 18.dp, top = 14.dp))
             netStatus?.takeIf { netActive }?.let { NetBadge(it, Modifier.align(Alignment.TopEnd).padding(end = 18.dp, top = 14.dp)) }
             savedVideo?.let { uri -> SavedVideoBanner(uri, Modifier.align(Alignment.BottomCenter).padding(bottom = 60.dp)) }
@@ -571,6 +585,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         }
         when (action) {
             GameMenuActivity.ACTION_RECORD -> toggleRecording()
+            GameMenuActivity.ACTION_EDIT_LAYOUT -> {
+                layoutBeforeEdit = padLayout; editSelected = null; editingLayout = true
+            }
             GameMenuActivity.ACTION_NETPLAY -> { if (!netActive) lobby = Lobby.Menu; showLobby = true }
             GameMenuActivity.ACTION_SAVE -> lifecycleScope.launch(Dispatchers.Default + safe) {
                 val ok = runCatching { stateFile(this@GameActivity, game, slot, wideCore).writeBytes(retroView.serializeState()) }.isSuccess
@@ -663,6 +680,50 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             return
         }
         retroView.sendMotionEvent(GLRetroView.MOTION_SOURCE_DPAD, x, y, port)
+    }
+
+    // ---------- Touch layout editor ----------
+
+    @Composable
+    private fun LayoutEditorBar(modifier: Modifier) {
+        CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
+            Column(
+                modifier.widthIn(max = 420.dp).clip(RoundedCornerShape(18.dp)).background(Neon.Surface.copy(alpha = 0.92f)).padding(14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("✋ اسحب أي زر لمكانه", color = Neon.Text, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold, fontSize = 15.sp)
+                val part = editSelected
+                if (part == null) {
+                    Text("اضغط على زر حتى تغيّر حجمه", color = Neon.TextDim, fontSize = 12.sp)
+                } else {
+                    val pos = padLayout[part]
+                    Text("حجم ${partName(part)}: ${(pos.scale * 100).toInt()}%", color = Neon.Cyan, fontSize = 13.sp)
+                    androidx.compose.material3.Slider(
+                        pos.scale, { padLayout = padLayout.with(part, pos.copy(scale = it)) }, valueRange = 0.5f..2f,
+                        colors = androidx.compose.material3.SliderDefaults.colors(thumbColor = Neon.Magenta, activeTrackColor = Neon.Cyan),
+                    )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    androidx.compose.material3.Button({
+                        settings.padLayout = padLayout.encode(); editingLayout = false; message = "انحفظت أماكن الأزرار ✅"
+                    }, colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = Neon.Cyan)) {
+                        Text("حفظ", color = Neon.Bg, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                    }
+                    androidx.compose.material3.OutlinedButton({ padLayout = PadLayout.DEFAULT; editSelected = null }) {
+                        Text("الافتراضي", color = Neon.Text)
+                    }
+                    androidx.compose.material3.OutlinedButton({ padLayout = layoutBeforeEdit; editingLayout = false }) {
+                        Text("إلغاء", color = Neon.Magenta)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun partName(p: PadPart) = when (p) {
+        PadPart.BAR -> "الشريط الفوكاني"; PadPart.DPAD -> "الأسهم"; PadPart.A -> "A"; PadPart.B -> "B"
+        PadPart.TA -> "Turbo A"; PadPart.TB -> "Turbo B"; PadPart.SELECT -> "SELECT"; PadPart.START -> "START"
     }
 
     // ---------- Video recording ----------

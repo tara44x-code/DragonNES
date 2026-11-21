@@ -29,6 +29,11 @@ class GameDatabase(private val context: Context) {
         return TitleMatch.bestMatches(titleHints, t.names, regionHints, threshold = 0.88).firstOrNull()
     }
 
+    /** Closest official name for a cover picture when the exact identification failed (looser match). */
+    @Synchronized
+    fun closest(system: GameSystem, titleHints: List<String>, regionHints: Set<String>): String? =
+        TitleMatch.bestMatches(titleHints, table(system).names, regionHints, threshold = 0.62).firstOrNull()
+
     /** Downloads the newest DATs (optional; the bundled copy already works offline). */
     @Synchronized
     fun refreshOnline(): Int {

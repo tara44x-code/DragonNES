@@ -1,6 +1,9 @@
 package com.dragonnes.emu
 
 import android.os.Bundle
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.toArgb
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -79,8 +82,15 @@ class MainActivity : ComponentActivity() {
                             onNew = { vm.resumePrompt = null; vm.launch(game, false) { g, rom, r -> GameActivity.start(this@MainActivity, g, rom, r) } },
                             onDismiss = { vm.resumePrompt = null })
                     }
+                    // System bars follow the theme colour too.
+                    val bg = Neon.Bg
+                    androidx.compose.runtime.SideEffect {
+                        window.statusBarColor = bg.toArgb(); window.navigationBarColor = bg.toArgb()
+                    }
                     if (showSettings) {
-                        SettingsScreen(vm, onBack = { showSettings = false })
+                        androidx.compose.foundation.layout.Box(
+                            androidx.compose.ui.Modifier.fillMaxSize().background(Neon.Bg)
+                        ) { SettingsScreen(vm, onBack = { showSettings = false }) }
                     } else {
                         LibraryScreen(
                             vm = vm,

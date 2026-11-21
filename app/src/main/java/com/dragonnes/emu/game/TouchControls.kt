@@ -5,6 +5,10 @@ import android.view.KeyEvent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.layout.layoutId
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.*
@@ -59,6 +63,65 @@ data class ControlsConfig(
     val rewindEnabled: Boolean,
 )
 
+/** Movable pieces of the on-screen pad. */
+enum class PadPart { BAR, DPAD, B, A, TB, TA, SELECT, START }
+
+/** Where one piece sits: centre as a fraction of the safe area (0..1) and its own size factor. */
+data class PartPos(val x: Float, val y: Float, val scale: Float = 1f)
+
+/** Player-editable layout of the touch controls (landscape). */
+data class PadLayout(val parts: Map<PadPart, PartPos>) {
+    operator fun get(p: PadPart) = parts[p] ?: DEFAULT.parts.getValue(p)
+    fun with(p: PadPart, pos: PartPos) = PadLayout(parts + (p to pos))
+
+    fun encode(): String = org.json.JSONObject().apply {
+        parts.forEach { (k, v) -> put(k.name, org.json.JSONArray(listOf(v.x.toDouble(), v.y.toDouble(), v.scale.toDouble()))) }
+    }.toString()
+
+    companion object {
+        val DEFAULT = PadLayout(mapOf(
+            PadPart.BAR to PartPos(0.50f, 0.07f),
+            PadPart.DPAD to PartPos(0.12f, 0.70f),
+            PadPart.B to PartPos(0.80f, 0.82f),
+            PadPart.A to PartPos(0.92f, 0.70f),
+            PadPart.TB to PartPos(0.82f, 0.52f),
+            PadPart.TA to PartPos(0.93f, 0.40f),
+            PadPart.SELECT to PartPos(0.42f, 0.95f),
+            PadPart.START to PartPos(0.58f, 0.95f),
+        ))
+
+        fun decode(json: String?): PadLayout = runCatching {
+            val o = org.json.JSONObject(json!!)
+            PadLayout(PadPart.entries.associateWith { p ->
+                o.optJSONArray(p.name)?.let { a -> PartPos(a.getDouble(0).toFloat(), a.getDouble(1).toFloat(), a.getDouble(2).toFloat()) }
+                    ?: DEFAULT.parts.getValue(p)
+            })
+        }.getOrDefault(DEFAULT)
+    }
+}
+
+/**
+ * Places each child (tagged with Modifier.layoutId(PadPart)) centred on its layout position,
+ * kept fully inside the area.
+ */
+@Composable
+private fun FreeLayout(layout: PadLayout, modifier: Modifier, content: @Composable () -> Unit) {
+    androidx.compose.ui.layout.Layout(content, modifier) { measurables, constraints ->
+        val w = constraints.maxWidth; val h = constraints.maxHeight
+        val placeables = measurables.map { m ->
+            (m.layoutId as PadPart) to m.measure(constraints.copy(minWidth = 0, minHeight = 0))
+        }
+        layout(w, h) {
+            placeables.forEach { (part, pl) ->
+                val pos = layout[part]
+                val x = (pos.x * w - pl.width / 2f).toInt().coerceIn(0, (w - pl.width).coerceAtLeast(0))
+                val y = (pos.y * h - pl.height / 2f).toInt().coerceIn(0, (h - pl.height).coerceAtLeast(0))
+                pl.place(x, y)
+            }
+        }
+    }
+}
+
 @Composable
 fun TouchControls(
     cfg: ControlsConfig,
@@ -71,45 +134,71 @@ fun TouchControls(
     onRewind: (Boolean) -> Unit,
     recording: Boolean = false,
     onRecord: () -> Unit = {},
+    layout: PadLayout = PadLayout.DEFAULT,
+    /** Edit mode: pieces are dragged instead of pressed. */
+    editing: Boolean = false,
+    selected: PadPart? = null,
+    onSelect: (PadPart) -> Unit = {},
+    onMove: (PadPart, PartPos) -> Unit = { _, _ -> },
 ) {
     val s = cfg.scale
-    Box(Modifier.fillMaxSize().alpha(cfg.opacity).safeDrawingPadding().padding(12.dp)) {
-        // Top bar: menu / rewind / fast-forward
-        Row(Modifier.align(Alignment.TopCenter), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            if (cfg.rewindEnabled) {
-                IconPad(Icons.Default.FastRewind, active = false, hold = onRewind, haptics = cfg.haptics)
-            }
-            IconPad(Icons.Default.Menu, active = false, tap = onMenu, haptics = cfg.haptics)
-            IconPad(Icons.Default.FastForward, active = fastForward, tap = onToggleFastForward, haptics = cfg.haptics)
-            IconPad(
-                if (recording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
-                active = recording, tap = onRecord, haptics = cfg.haptics,
-            )
-        }
+    var areaSize by remember { mutableStateOf(androidx.compose.ui.unit.IntSize(1, 1)) }
+    val currentLayout by rememberUpdatedState(layout)
 
-        DPad(Modifier.align(Alignment.BottomStart).padding(start = 8.dp, bottom = 8.dp), 160.dp * s, cfg.haptics, onDpad)
-
-        // Face buttons: classic NES diagonal (B low-left, A high-right), turbo buttons above them.
-        Box(Modifier.align(Alignment.BottomEnd).padding(end = 4.dp, bottom = 8.dp)) {
-            val b = 64.dp * s
-            val t = 46.dp * s
-            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (cfg.turboButtons) Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    FaceButton("TB", t, Neon.pad.sample(0.35f), NesKeys.B, cfg.haptics, onTurbo, Modifier.padding(top = t / 2))
-                    FaceButton("TA", t, Neon.pad.sample(0.75f), NesKeys.A, cfg.haptics, onTurbo)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                    FaceButton("B", b, Neon.pad.sample(0.2f), NesKeys.B, cfg.haptics, onKey, Modifier.padding(top = b / 2))
-                    FaceButton("A", b, Neon.pad.sample(1f), NesKeys.A, cfg.haptics, onKey)
-                }
+    /** In edit mode, a transparent layer on top of each piece catches drags. */
+    @Composable
+    fun Piece(part: PadPart, content: @Composable (k: Float) -> Unit) {
+        val pos = layout[part]
+        Box(Modifier.layoutId(part)) {
+            content(s * pos.scale)
+            if (editing) {
+                Box(
+                    Modifier.matchParentSize()
+                        .border(if (selected == part) 3.dp else 1.dp, if (selected == part) Neon.pad.sample(1f) else Neon.TextDim.copy(alpha = 0.6f), RoundedCornerShape(12.dp))
+                        .pointerInput(part) {
+                            detectDragGestures(onDragStart = { onSelect(part) }) { change, drag ->
+                                change.consume()
+                                val p = currentLayout[part]
+                                onMove(part, p.copy(
+                                    x = (p.x + drag.x / areaSize.width).coerceIn(0f, 1f),
+                                    y = (p.y + drag.y / areaSize.height).coerceIn(0f, 1f),
+                                ))
+                            }
+                        }
+                        .pointerInput(part) { detectTapGestures { onSelect(part) } },
+                )
             }
         }
+    }
 
-        // Select / Start
-        Row(Modifier.align(Alignment.BottomCenter), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            PillButton("SELECT", NesKeys.SELECT, cfg.haptics, onKey)
-            PillButton("START", NesKeys.START, cfg.haptics, onKey)
+    FreeLayout(
+        layout,
+        Modifier.fillMaxSize().alpha(if (editing) 1f else cfg.opacity).safeDrawingPadding().padding(12.dp)
+            .onSizeChanged { areaSize = it },
+    ) {
+        Piece(PadPart.BAR) { _ ->
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                if (cfg.rewindEnabled) {
+                    IconPad(Icons.Default.FastRewind, active = false, hold = onRewind, haptics = cfg.haptics)
+                }
+                IconPad(Icons.Default.Menu, active = false, tap = onMenu, haptics = cfg.haptics)
+                IconPad(Icons.Default.FastForward, active = fastForward, tap = onToggleFastForward, haptics = cfg.haptics)
+                IconPad(
+                    if (recording) Icons.Default.Stop else Icons.Default.FiberManualRecord,
+                    active = recording, tap = onRecord, haptics = cfg.haptics,
+                )
+            }
         }
+        Piece(PadPart.DPAD) { k -> DPad(Modifier, 160.dp * k, cfg.haptics, onDpad) }
+        Piece(PadPart.B) { k -> FaceButton("B", 64.dp * k, Neon.pad.sample(0.2f), NesKeys.B, cfg.haptics, onKey) }
+        Piece(PadPart.A) { k -> FaceButton("A", 64.dp * k, Neon.pad.sample(1f), NesKeys.A, cfg.haptics, onKey) }
+        if (cfg.turboButtons) {
+            // Turbo buttons follow the same size setting as A/B.
+            Piece(PadPart.TB) { k -> FaceButton("TB", 52.dp * k, Neon.pad.sample(0.35f), NesKeys.B, cfg.haptics, onTurbo) }
+            Piece(PadPart.TA) { k -> FaceButton("TA", 52.dp * k, Neon.pad.sample(0.75f), NesKeys.A, cfg.haptics, onTurbo) }
+        }
+        Piece(PadPart.SELECT) { k -> PillButton("SELECT", NesKeys.SELECT, cfg.haptics, onKey, k) }
+        Piece(PadPart.START) { k -> PillButton("START", NesKeys.START, cfg.haptics, onKey, k) }
     }
 }
 
@@ -209,12 +298,12 @@ private fun FaceButton(
 }
 
 @Composable
-private fun PillButton(label: String, keyCode: Int, haptics: Boolean, onKey: (Int, Boolean) -> Unit) {
+private fun PillButton(label: String, keyCode: Int, haptics: Boolean, onKey: (Int, Boolean) -> Unit, scale: Float = 1f) {
     var pressed by remember { mutableStateOf(false) }
     val view = LocalView.current
     val shape = RoundedCornerShape(50)
     Box(
-        Modifier.height(30.dp).widthIn(min = 72.dp)
+        Modifier.height(30.dp * scale).widthIn(min = 72.dp * scale)
             .background(if (pressed) Neon.pad.sample(0f).copy(alpha = 0.5f) else Neon.Surface.copy(alpha = 0.6f), shape)
             .border(1.5.dp, Neon.pad.sample(0f), shape)
             .pointerInput(keyCode) {
@@ -228,7 +317,7 @@ private fun PillButton(label: String, keyCode: Int, haptics: Boolean, onKey: (In
             }
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
-    ) { Text(label, color = Neon.Text, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+    ) { Text(label, color = Neon.Text, fontSize = (12 * scale).sp, fontWeight = FontWeight.Bold) }
 }
 
 @Composable
