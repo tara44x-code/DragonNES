@@ -133,6 +133,18 @@ fun SettingsScreen(vm: LibraryViewModel, onBack: () -> Unit) {
             Slider(scale, { scale = it; s.controlsScale = it }, valueRange = 0.7f..1.4f, colors = neonSlider())
         }
 
+        Section("اللعب أونلاين") {
+            var name by remember { mutableStateOf(s.playerName) }
+            var relay by remember { mutableStateOf(s.relayUrl) }
+            Text("اسمك اللي يشوفه صديقك", color = Neon.Text, fontSize = 14.sp)
+            OutlinedTextField(name, { name = it.take(24); s.playerName = name }, Modifier.fillMaxWidth(), singleLine = true)
+            Text("عنوان السيرفر (اتركه فارغ للافتراضي)", color = Neon.Text, fontSize = 14.sp)
+            OutlinedTextField(
+                relay, { relay = it; s.relayUrl = it }, Modifier.fillMaxWidth(), singleLine = true,
+                placeholder = { Text(com.dragonnes.emu.BuildConfig.RELAY_URL.ifEmpty { "https://dragonnes-relay.xxx.workers.dev" }, fontSize = 12.sp) },
+            )
+        }
+
         Section("المحاكاة") {
             Toggle("سؤال المتابعة عند فتح اللعبة", "يخيّرك: متابعة من آخر نقطة أو بدء من جديد", autoResume) {
                 autoResume = it; s.autoResume = it

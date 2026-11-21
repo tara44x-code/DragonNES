@@ -9,18 +9,54 @@ index f47302e..6dacc87 100644
      <uses-feature android:glEsVersion="0x00020000" android:required="true" />
  </manifest>
 diff --git a/libretrodroid/src/main/cpp/libretrodroid.cpp b/libretrodroid/src/main/cpp/libretrodroid.cpp
-index 60640c4..04053a8 100644
+index 60640c4..080e4b8 100644
 --- a/libretrodroid/src/main/cpp/libretrodroid.cpp
 +++ b/libretrodroid/src/main/cpp/libretrodroid.cpp
-@@ -443,7 +443,7 @@ void LibretroDroid::pause() {
+@@ -145,13 +145,13 @@ void LibretroDroid::setControllerType(unsigned int port, unsigned int type) {
+ }
+ 
+ bool LibretroDroid::unserializeState(int8_t *data, size_t size) {
+-    std::lock_guard<std::mutex> lock(coreLock);
++    std::lock_guard<std::recursive_mutex> lock(coreLock);
+ 
+     return core->retro_unserialize(data, size);
+ }
+ 
+ JNIEXPORT jboolean JNICALL LibretroDroid::unserializeSRAM(int8_t* data, size_t size) {
+-    std::lock_guard<std::mutex> lock(coreLock);
++    std::lock_guard<std::recursive_mutex> lock(coreLock);
+ 
+     size_t sramSize = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+     void *sramState = core->retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
+@@ -172,7 +172,7 @@ JNIEXPORT jboolean JNICALL LibretroDroid::unserializeSRAM(int8_t* data, size_t s
+ }
+ 
+ std::pair<int8_t*, size_t> LibretroDroid::serializeSRAM() {
+-    std::lock_guard<std::mutex> lock(coreLock);
++    std::lock_guard<std::recursive_mutex> lock(coreLock);
+ 
+     size_t size = core->retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
+     auto* data = new int8_t[size];
+@@ -405,7 +405,7 @@ void LibretroDroid::loadGameFromVirtualFiles(std::vector<VFSFile> virtualFiles)
+ }
+ 
+ void LibretroDroid::destroy() {
+-    std::lock_guard<std::mutex> lock(coreLock);
++    std::lock_guard<std::recursive_mutex> lock(coreLock);
+ 
+     LOGD("Performing libretrodroid destroy");
+ 
+@@ -443,8 +443,8 @@ void LibretroDroid::pause() {
      input = nullptr;
  }
  
 -void LibretroDroid::step() {
+-    std::lock_guard<std::mutex> lock(coreLock);
 +void LibretroDroid::step(const std::function<bool()>& beforeRun) {
-     std::lock_guard<std::mutex> lock(coreLock);
++    std::lock_guard<std::recursive_mutex> lock(coreLock);
  
      LOGD("Stepping into retro_run()");
+ 
 @@ -456,8 +456,17 @@ void LibretroDroid::step() {
          frames = std::min(requestedFrames, 2u);
      }
@@ -96,6 +132,38 @@ index 60640c4..04053a8 100644
      if (audio && audioEnabled) {
          audio->write(data, frames);
      }
+@@ -565,13 +613,13 @@ uintptr_t LibretroDroid::handleGetCurrentFrameBuffer() {
+ }
+ 
+ void LibretroDroid::reset() {
+-    std::lock_guard<std::mutex> lock(coreLock);
++    std::lock_guard<std::recursive_mutex> lock(coreLock);
+ 
+     core->retro_reset();
+ }
+ 
+ std::pair<int8_t*, size_t> LibretroDroid::serializeState() {
+-    std::lock_guard<std::mutex> lock(coreLock);
++    std::lock_guard<std::recursive_mutex> lock(coreLock);
+ 
+     size_t size = core->retro_serialize_size();
+     auto data = new int8_t[size];
+@@ -582,13 +630,13 @@ std::pair<int8_t*, size_t> LibretroDroid::serializeState() {
+ }
+ 
+ void LibretroDroid::resetCheat() {
+-    std::lock_guard<std::mutex> lock(coreLock);
++    std::lock_guard<std::recursive_mutex> lock(coreLock);
+ 
+     core->retro_cheat_reset();
+ }
+ 
+ void LibretroDroid::setCheat(unsigned index, bool enabled, const std::string& code) {
+-    std::lock_guard<std::mutex> lock(coreLock);
++    std::lock_guard<std::recursive_mutex> lock(coreLock);
+ 
+     core->retro_cheat_set(index, enabled, Utils::cloneToCString(code));
+ }
 @@ -608,6 +656,7 @@ void LibretroDroid::afterGameLoad() {
      fpsSync = std::make_unique<FPSSync>(system_av_info.timing.fps, screenRefreshRate);
  
@@ -105,7 +173,7 @@ index 60640c4..04053a8 100644
      audio = std::make_unique<Audio>(
          (int32_t) std::lround(inputSampleRate),
 diff --git a/libretrodroid/src/main/cpp/libretrodroid.h b/libretrodroid/src/main/cpp/libretrodroid.h
-index b507aee..bd34367 100644
+index b507aee..60d571a 100644
 --- a/libretrodroid/src/main/cpp/libretrodroid.h
 +++ b/libretrodroid/src/main/cpp/libretrodroid.h
 @@ -26,6 +26,8 @@
@@ -145,7 +213,7 @@ index b507aee..bd34367 100644
      void pause();
      void destroy();
  
-@@ -174,6 +188,12 @@ private:
+@@ -174,9 +188,16 @@ private:
      ImmersiveMode::Config immersiveModeConfig {};
  
      float defaultAspectRatio = 1.0;
@@ -157,7 +225,12 @@ index b507aee..bd34367 100644
 +    std::vector<int16_t> capturedAudio;
      bool dirtyVideo = false;
  
-     std::mutex coreLock;
+-    std::mutex coreLock;
++    // Recursive: netplay calls serialize/unserialize from inside step() (same thread).
++    std::recursive_mutex coreLock;
+ 
+     std::unique_ptr<Core> core;
+     std::unique_ptr<Audio> audio;
 diff --git a/libretrodroid/src/main/cpp/libretrodroidjni.cpp b/libretrodroid/src/main/cpp/libretrodroidjni.cpp
 index 2ec15cf..588296c 100644
 --- a/libretrodroid/src/main/cpp/libretrodroidjni.cpp
