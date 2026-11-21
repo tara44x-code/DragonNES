@@ -209,7 +209,7 @@ private fun EmptyState(onAdd: () -> Unit) {
             Spacer(Modifier.height(12.dp))
             Text("المكتبة فارغة", color = Neon.Text, fontWeight = FontWeight.Bold, fontSize = 18.sp)
             Text(
-                "اختر المجلد اللي بيه ألعابك، والتطبيق يتعرف عليها ويجيب أغلفتها تلقائياً.\nيدعم: md, gen, bin, smd, sms, gg, sg, zip",
+                "اختر المجلد اللي بيه ألعابك، والتطبيق يتعرف عليها ويجيب أغلفتها تلقائياً.\nيدعم: nes, unf, unif, zip",
                 color = Neon.TextDim, textAlign = TextAlign.Center, fontSize = 13.sp,
             )
             Spacer(Modifier.height(16.dp))

@@ -145,6 +145,9 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
     private var showLobby by mutableStateOf(false)
     private var lanHost: com.dragonnes.emu.netplay.LanHost? = null
     private var pendingTransport: com.dragonnes.emu.netplay.Transport? = null
+    /** Last internet room (code, I am host), so we can rejoin it after leaving / losing the connection. */
+    private var lastRoom: Pair<String, Boolean>? = null
+    private var reconnectTries = 0
     private var netLog by mutableStateOf<List<String>>(emptyList())
     private fun netLogAdd(text: String) {
         val t = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())
@@ -802,11 +805,13 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
 
     @Composable
     private fun NetBadge(st: com.dragonnes.emu.netplay.NetplaySession.Status, modifier: Modifier) {
+        val me = if (netplay?.isHost == true) "لاعب 1" else "لاعب 2"
         val text = when {
+            st.waitingRejoin -> "⏳ صديقك طلع — بانتظار يرجع" + (lastRoom?.first?.let { " • $it" } ?: "")
             st.peerPaused -> "⏸ صديقك فاتح القائمة"
             st.waitingForPeer -> "⏳ بانتظار صديقك…"
             st.phase == com.dragonnes.emu.netplay.NetplaySession.Phase.SYNCING -> st.note ?: "جاري المزامنة…"
-            else -> (if (st.label == "إنترنت") "🌐" else "🏠") + " ويه ${st.peerName ?: "صديقك"}" + (st.pingMs?.let { " • ${it}ms" } ?: "")
+            else -> (if (st.label == "إنترنت") "🌐 " else "🏠 ") + me + " • ويه ${st.peerName ?: "صديقك"}" + (st.pingMs?.let { " • ${it}ms" } ?: "")
         }
         Text(
             text, color = Color.White, fontSize = 12.sp,
@@ -852,12 +857,42 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         }
         st.note?.takeIf { it != before?.note && st.phase == com.dragonnes.emu.netplay.NetplaySession.Phase.PLAYING }?.let { message = it }
         if (st.phase == com.dragonnes.emu.netplay.NetplaySession.Phase.ENDED) {
+            val wasHost = netplay?.isHost == true
             retroView.lockstepHook = null
             netplay = null
             lanHost?.stop(); lanHost = null
             lobby = Lobby.Menu
-            message = st.endReason
+            val room = lastRoom
+            if (st.lost && room != null && reconnectTries < 8) {
+                // Internet connection dropped: rejoin the same room automatically (same player number).
+                reconnectTries++
+                message = "انقطع الاتصال — جاري إعادة الاتصال ($reconnectTries)…"
+                lifecycleScope.launch(safe) {
+                    delay(1500L * reconnectTries)
+                    if (netplay == null) { if (room.second) lobbyActions.hostRoom(room.first) else lobbyActions.joinOnline(room.first) }
+                }
+            } else {
+                message = (st.endReason ?: "انتهى اللعب أونلاين") + " — هسه تلعب لوحدك"
+                if (!wasHost) reconnectTries = 0
+            }
         }
+        if (st.phase == com.dragonnes.emu.netplay.NetplaySession.Phase.PLAYING) reconnectTries = 0
+    }
+
+    private fun rememberRoom(code: String, host: Boolean) {
+        lastRoom = code to host
+        getSharedPreferences("netplay", MODE_PRIVATE).edit()
+            .putString("code", code).putBoolean("host", host).putString("crc", game.crc)
+            .putLong("time", System.currentTimeMillis()).apply()
+    }
+
+    /** Internet room used with this game in the last 30 minutes. */
+    private fun savedRoom(): Pair<String, Boolean>? {
+        val p = getSharedPreferences("netplay", MODE_PRIVATE)
+        val code = p.getString("code", null) ?: return null
+        if (p.getString("crc", null) != game.crc) return null
+        if (System.currentTimeMillis() - p.getLong("time", 0) > 30 * 60_000L) return null
+        return code to p.getBoolean("host", false)
     }
 
     private val lobbyActions = object : LobbyActions {
@@ -890,19 +925,34 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
             }
         }
 
-        override fun hostOnline() {
-            val code = (1..6).map { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".random() }.joinToString("")
+        override fun hostOnline() = hostRoom((1..6).map { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".random() }.joinToString(""))
+
+        override fun rejoinLast() {
+            val room = savedRoom() ?: return
+            reconnectTries = 0
+            if (room.second) hostRoom(room.first) else joinOnline(room.first)
+        }
+
+        override fun lastRoomLabel(): String? = savedRoom()?.let { (code, host) ->
+            "↩ رجوع للغرفة $code (" + (if (host) "إنت المضيف • لاعب 1" else "لاعب 2") + ")"
+        }
+
+        fun hostRoom(code: String) {
+            rememberRoom(code, host = true)
             lobby = Lobby.HostingOnline(code, connected = false)
             lateinit var transport: com.dragonnes.emu.netplay.RelayTransport
             transport = com.dragonnes.emu.netplay.RelayTransport.connect(relayUrl(), code, host = true) { ev ->
                 runOnUiThread {
                     when {
-                        ev == "peer-joined" && netplay == null -> {
+                        (ev == "peer-joined" || ev == "peer-present") && netplay == null -> {
                             lobby = Lobby.HostingOnline(code, connected = true)
                             startSession(transport, host = true)
                         }
                         ev == "room-taken" -> lobby = Lobby.Failed("هذا الكود مستخدم، جرّب مرة ثانية")
-                        ev == "peer-left" -> netplay?.stop("انقطع الاتصال بصديقك")
+                        ev == "peer-left" -> netplay?.peerLeft()
+                        ev == "room-taken" && reconnectTries > 0 -> lifecycleScope.launch(safe) {
+                            delay(2500); if (netplay == null) hostRoom(code)   // old connection not closed yet
+                        }
                         ev.startsWith("error:") && netplay == null -> lobby = Lobby.Failed("ما كدرت أوصل للسيرفر. تأكد من الإنترنت.")
                     }
                 }
@@ -913,15 +963,22 @@ class GameActivity : ComponentActivity(), InputManager.InputDeviceListener {
         override fun openJoinOnline() { lobby = Lobby.JoinOnline }
 
         override fun joinOnline(code: String) {
+            rememberRoom(code, host = false)
             lobby = Lobby.Connecting("جاري الدخول للغرفة $code…")
             lateinit var transport: com.dragonnes.emu.netplay.RelayTransport
             transport = com.dragonnes.emu.netplay.RelayTransport.connect(relayUrl(), code, host = false) { ev ->
                 runOnUiThread {
                     when {
                         (ev == "peer-present" || ev == "peer-joined") && netplay == null -> startSession(transport, host = false)
+                        ev == "no-host" && reconnectTries in 1..7 -> {
+                            // Rejoining: the host may still be reconnecting, try again shortly.
+                            transport.close(); reconnectTries++
+                            lobby = Lobby.Connecting("بانتظار المضيف يرجع ($reconnectTries)…")
+                            lifecycleScope.launch(safe) { delay(1500L * reconnectTries); if (netplay == null) joinOnline(code) }
+                        }
                         ev == "no-host" -> { transport.close(); lobby = Lobby.Failed("ما لكيت غرفة بهذا الكود. تأكد من الكود وإن صديقك بعده بالانتظار.") }
                         ev == "room-full" -> { transport.close(); lobby = Lobby.Failed("الغرفة مليانة") }
-                        ev == "peer-left" -> netplay?.stop("المضيف طلع من اللعب")
+                        ev == "peer-left" -> netplay?.connectionLost("المضيف انقطع")
                         ev.startsWith("error:") && netplay == null -> lobby = Lobby.Failed("ما كدرت أوصل للسيرفر. تأكد من الإنترنت.")
                     }
                 }

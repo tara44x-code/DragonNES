@@ -29,6 +29,17 @@ for s in "${SYSTEMS[@]}"; do
   fi
 done
 ( cd "$tmp/cht" && zip -q -r -9 "$OLDPWD/$assets/cheats.zip" . )
+
+# Box-art names from libretro-thumbnails (file names only, no images) for cover matching.
+for sysdir in "NES|Nintendo_-_Nintendo_Entertainment_System"; do
+  key="${sysdir%%|*}"; repo="${sysdir#*|}"
+  git clone -q --depth 1 --filter=blob:none --no-checkout "https://github.com/libretro-thumbnails/$repo" "$tmp/thumbs_$key"
+  git -C "$tmp/thumbs_$key" ls-tree -r --name-only HEAD \
+    | sed -n 's#^Named_Boxarts/\(.*\)\.png$#\1#p' \
+    | grep -v '\[' | grep -v -E '\((19|20)[0-9x]{2}' \
+    > "$assets/db/$key.boxarts.txt"
+  echo "box arts $key: $(wc -l < "$assets/db/$key.boxarts.txt")"
+done
 date -u +%Y-%m-%d > "$assets/db/version.txt"
 rm -rf "$tmp"
 echo "Offline database ready:"; ls -la "$assets/db" "$assets/cheats.zip"

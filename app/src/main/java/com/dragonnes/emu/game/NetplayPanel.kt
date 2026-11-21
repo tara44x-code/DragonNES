@@ -49,6 +49,8 @@ interface LobbyActions {
     fun joinLan(address: String)
     fun hostOnline()
     fun openJoinOnline()
+    fun rejoinLast()
+    fun lastRoomLabel(): String?
     fun joinOnline(code: String)
     fun shareCode(code: String)
     fun cancelLobby()
@@ -110,6 +112,12 @@ fun NetplayPanel(lobby: Lobby, status: NetplaySession.Status?, onlineReady: Bool
 @Composable
 private fun MenuPage(onlineReady: Boolean, a: LobbyActions) {
     Text("الشخصين لازم يفتحون نفس اللعبة. المضيف يصير لاعب 1 والمنضم لاعب 2.", color = Neon.TextDim, fontSize = 13.sp)
+    if (onlineReady) a.lastRoomLabel()?.let { label ->
+        Button(a::rejoinLast, Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = Neon.Magenta)) {
+            Text(label, color = Neon.Bg, fontWeight = FontWeight.Bold)
+        }
+    }
     Section("🏠 نفس الواي فاي أو الهوتسبوت", "أسرع اتصال، ما يحتاج إنترنت")
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
         BigButton("استضافة", Icons.Default.Home, Modifier.weight(1f), a::hostLan)

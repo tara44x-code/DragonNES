@@ -55,6 +55,10 @@ class NetplaySession(
         val note: String? = null,
         val endReason: String? = null,
         val label: String = "",
+        /** Ended because the connection dropped (not because someone chose to leave). */
+        val lost: Boolean = false,
+        /** Host: the guest left, the room stays open for them to come back. */
+        val waitingRejoin: Boolean = false,
     )
 
     /** The local player's pad (see [Pad]); written by the UI/input thread. */
@@ -103,6 +107,9 @@ class NetplaySession(
 
     fun currentStatus() = status
 
+    /** The relay says the other phone disconnected: end, but allow an automatic rejoin. */
+    fun connectionLost(reason: String) = end(reason, lost = true)
+
     /** Ends the session (also tells the other player). */
     fun stop(reason: String = "انتهت جلسة اللعب أونلاين") {
         if (status.phase == Phase.ENDED) return
@@ -110,11 +117,11 @@ class NetplaySession(
         end(reason)
     }
 
-    private fun end(reason: String) {
+    private fun end(reason: String, lost: Boolean = false) {
         if (status.phase == Phase.ENDED) return
         running = false
-        CrashReporter.crumb("netplay end: $reason")
-        publish(status.copy(phase = Phase.ENDED, endReason = reason, waitingForPeer = false))
+        CrashReporter.crumb("netplay end: $reason lost=$lost")
+        publish(status.copy(phase = Phase.ENDED, endReason = reason, waitingForPeer = false, lost = lost))
         scope.launch { delay(300); transport.close(); scope.cancel() }
     }
 
@@ -152,10 +159,23 @@ class NetplaySession(
                 }
                 is Msg.Paused -> publish(status.copy(peerPaused = msg.paused))
                 is Msg.Error -> end(msg.reason)
-                Msg.Bye -> end("صديقك طلع من اللعب")
+                Msg.Bye -> if (isHost && !transport.isLan) peerLeft() else end("صديقك طلع من اللعب")
             }
         }
-        end("انقطع الاتصال بصديقك")
+        end("انقطع الاتصال بصديقك", lost = true)
+    }
+
+    /**
+     * Host on the internet: the guest left or lost the connection. Keep the room (and this
+     * session) open and freeze the game until they come back; their Hello starts a fresh sync.
+     */
+    fun peerLeft() {
+        if (!isHost || status.phase == Phase.ENDED) return
+        running = false
+        awaitingReadyEpoch = -1
+        log("صديقك طلع، الغرفة مفتوحة بانتظار يرجع")
+        publish(status.copy(phase = Phase.SYNCING, waitingRejoin = true, waitingForPeer = false, peerPaused = false,
+            note = "صديقك طلع — بانتظار يرجع…"))
     }
 
     private fun onHello(h: Msg.Hello) {
@@ -164,8 +184,9 @@ class NetplaySession(
             !h.romCrc.equals(romCrc, ignoreCase = true) ->
                 fail("صديقك فاتح لعبة مختلفة (${h.game}). لازم تفتحون نفس اللعبة ونفس النسخة")
             isHost -> {
+                running = false
                 transport.send(Protocol.encode(Msg.Hello(Protocol.VERSION, romCrc, playerName, gameTitle)))
-                publish(status.copy(peerName = h.name, phase = Phase.SYNCING, note = "جاري المزامنة…"))
+                publish(status.copy(peerName = h.name, phase = Phase.SYNCING, note = "جاري المزامنة…", waitingRejoin = false))
                 scope.launch {
                     delay(if (transport.isLan) 300 else 2200)   // collect a couple of pings first
                     chooseDelay()

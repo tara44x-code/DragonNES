@@ -21,19 +21,20 @@ data class Game(
     val dbName: String?,      // official No-Intro name, if identified
     val lastPlayed: Long = 0L,
     val headerName: String? = null, // name stored inside the cartridge header
-    val coverName: String? = null,  // closest official name, used only for the cover picture
+    val coverName: String? = null,  // box-art name (libretro-thumbnails) used for the cover picture
+    val coverV: Int = 0,            // version of the cover matching that produced coverName
 ) {
     /** File name without extension / tags, e.g. "Earthworm Jim (U) [!].bin" -> "Earthworm Jim" */
     val fileTitle: String get() = TitleMatch.base(innerName ?: fileName)
 
     val title: String get() = dbName ?: fileTitle
     val romExtension: String get() = (innerName ?: fileName).substringAfterLast('.').lowercase()
-    val coverUrl: String? get() = (dbName ?: coverName)?.let { LibretroUrls.boxartUrl(system, it) }
+    val coverUrl: String? get() = (coverName ?: dbName)?.let { LibretroUrls.boxartUrl(system, it) }
 
     fun toJson() = JSONObject().apply {
         put("uri", uri); put("fileName", fileName); put("innerName", innerName ?: "")
         put("system", system.name); put("crc", crc); put("dbName", dbName ?: "")
-        put("lastPlayed", lastPlayed); put("headerName", headerName ?: ""); put("coverName", coverName ?: "")
+        put("lastPlayed", lastPlayed); put("headerName", headerName ?: ""); put("coverName", coverName ?: ""); put("coverV", coverV)
     }
 
     companion object {
@@ -47,6 +48,7 @@ data class Game(
             lastPlayed = o.optLong("lastPlayed"),
             headerName = o.optString("headerName").ifEmpty { null },
             coverName = o.optString("coverName").ifEmpty { null },
+            coverV = o.optInt("coverV"),
         )
     }
 }
@@ -94,7 +96,11 @@ class LibraryRepository(private val context: Context) {
 
         // Keep games from other folders the user added earlier.
         val otherFolders = known.values.filter { g -> found.none { it.uri == g.uri } && !g.uri.startsWith(treeUriPrefix(treeUri)) }
-        val result = (found + otherFolders).sortedBy { it.title.lowercase() }
+        // Cover picture from the real box-art list (also fixes games added before this existed).
+        val coverVersion = 2
+        val result = (found + otherFolders)
+            .map { g -> if (g.coverName == null || g.coverV < coverVersion) g.copy(coverName = Covers.match(context, g), coverV = coverVersion) else g }
+            .sortedBy { it.title.lowercase() }
         save(result)
         result
     }
@@ -127,8 +133,7 @@ class LibraryRepository(private val context: Context) {
         val shownName = inner ?: fileName
         val hints = listOfNotNull(TitleMatch.base(shownName), header?.name)
         val dbName = db.identify(system, crcs, header?.serial, hints, TitleMatch.tags(shownName))
-        val coverName = if (dbName == null) db.closest(system, hints, TitleMatch.tags(shownName)) else null
-        return Game(uri.toString(), fileName, inner, system, crc, dbName, headerName = header?.name, coverName = coverName)
+        return Game(uri.toString(), fileName, inner, system, crc, dbName, headerName = header?.name)
     }
 
     /**
