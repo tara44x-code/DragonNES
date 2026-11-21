@@ -24,7 +24,7 @@ android {
         // SHA-256 of the developer's release signing certificate(s), comma separated.
         // Release builds signed with any other key refuse to run (see Integrity.kt).
         // Online-play relay (Cloudflare Worker). Set the RELAY_URL repository variable, or edit here.
-        buildConfigField("String", "RELAY_URL", "\"" + (System.getenv("RELAY_URL") ?: "") + "\"")
+        buildConfigField("String", "RELAY_URL", "\"" + (System.getenv("RELAY_URL")?.takeIf { it.isNotBlank() } ?: "https://dragonnes-relay.tara44x.workers.dev") + "\"")
 
         buildConfigField("String", "RELEASE_CERTS",
             "\"4E49723BE6391020285937FC30BD029EF948EE7F3246E567C03696F44CB7C667,8DC2C4DBD146EC206CFE9FD1100C29DACB8F034A624BB3869D39B89A7F056985\"")
