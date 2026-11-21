@@ -93,6 +93,7 @@ fun ArcadeHome(vm: LibraryViewModel, onOpenSettings: () -> Unit, onGridView: () 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         BoxWithConstraints(Modifier.fillMaxSize().background(Neon.Bg)) {
             val landscape = maxWidth > maxHeight
+            val screenW = maxWidth; val screenH = maxHeight
             NightScene(Modifier.fillMaxSize())
 
             Column(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -117,7 +118,7 @@ fun ArcadeHome(vm: LibraryViewModel, onOpenSettings: () -> Unit, onGridView: () 
                     if (games.isEmpty()) {
                         EmptyHint { pickFolder.launch(null) }
                     } else {
-                        val cardW = if (landscape) (maxHeight * 0.34f).coerceIn(120.dp, 220.dp) else (maxWidth * 0.42f).coerceIn(130.dp, 220.dp)
+                        val cardW = if (landscape) (screenH * 0.34f).coerceIn(120.dp, 220.dp) else (screenW * 0.42f).coerceIn(130.dp, 220.dp)
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Arrow(Icons.AutoMirrored.Filled.KeyboardArrowLeft) { go(-1) }
                             BoxWithConstraints(Modifier.weight(1f)) {
