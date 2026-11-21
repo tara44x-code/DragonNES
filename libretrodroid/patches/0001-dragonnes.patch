@@ -9,10 +9,39 @@ index f47302e..6dacc87 100644
      <uses-feature android:glEsVersion="0x00020000" android:required="true" />
  </manifest>
 diff --git a/libretrodroid/src/main/cpp/libretrodroid.cpp b/libretrodroid/src/main/cpp/libretrodroid.cpp
-index 60640c4..1052183 100644
+index 60640c4..04053a8 100644
 --- a/libretrodroid/src/main/cpp/libretrodroid.cpp
 +++ b/libretrodroid/src/main/cpp/libretrodroid.cpp
-@@ -490,7 +490,15 @@ void LibretroDroid::step() {
+@@ -443,7 +443,7 @@ void LibretroDroid::pause() {
+     input = nullptr;
+ }
+ 
+-void LibretroDroid::step() {
++void LibretroDroid::step(const std::function<bool()>& beforeRun) {
+     std::lock_guard<std::mutex> lock(coreLock);
+ 
+     LOGD("Stepping into retro_run()");
+@@ -456,8 +456,17 @@ void LibretroDroid::step() {
+         frames = std::min(requestedFrames, 2u);
+     }
+ 
+-    for (size_t i = 0; i < frames * frameSpeed; i++)
+-        core->retro_run();
++    if (lockstep) {
++        // Netplay: never more than one frame per step, and only when both players' inputs are known.
++        frames = std::min(frames, 1u);
++        for (size_t i = 0; i < frames; i++) {
++            if (beforeRun && !beforeRun()) break;
++            core->retro_run();
++        }
++    } else {
++        for (size_t i = 0; i < frames * frameSpeed; i++)
++            core->retro_run();
++    }
+ 
+     if (video && !video->rendersInVideoCallback()) {
+         video->renderFrame();
+@@ -490,7 +499,15 @@ void LibretroDroid::step() {
      }
  }
  
@@ -28,11 +57,67 @@ index 60640c4..1052183 100644
      float gameAspectRatio = Environment::getInstance().retrieveGameSpecificAspectRatio();
      return gameAspectRatio > 0 ? gameAspectRatio : defaultAspectRatio;
  }
+@@ -538,7 +555,38 @@ void LibretroDroid::handleVideoRefresh(
+     }
+ }
+ 
++void LibretroDroid::setLockstep(bool enabled) {
++    lockstep = enabled;
++}
++
++void LibretroDroid::setAudioCapture(bool enabled) {
++    std::lock_guard<std::mutex> lock(captureLock);
++    audioCapture = enabled;
++    capturedAudio.clear();
++}
++
++size_t LibretroDroid::readCapturedAudio(int16_t* out, size_t maxSamples) {
++    std::lock_guard<std::mutex> lock(captureLock);
++    size_t n = std::min(maxSamples, capturedAudio.size());
++    if (n == 0) return 0;
++    std::copy(capturedAudio.begin(), capturedAudio.begin() + n, out);
++    capturedAudio.erase(capturedAudio.begin(), capturedAudio.begin() + n);
++    return n;
++}
++
++std::array<float, 4> LibretroDroid::getGameRect() {
++    if (!video) return { 0.0F, 0.0F, 1.0F, 1.0F };
++    return video->getGameRect();
++}
++
+ size_t LibretroDroid::handleAudioCallback(const int16_t *data, size_t frames) {
++    {
++        std::lock_guard<std::mutex> lock(captureLock);
++        // Keep at most ~10 s buffered if nobody reads it.
++        if (audioCapture && capturedAudio.size() < 48000 * 2 * 10) {
++            capturedAudio.insert(capturedAudio.end(), data, data + frames * 2);
++        }
++    }
+     if (audio && audioEnabled) {
+         audio->write(data, frames);
+     }
+@@ -608,6 +656,7 @@ void LibretroDroid::afterGameLoad() {
+     fpsSync = std::make_unique<FPSSync>(system_av_info.timing.fps, screenRefreshRate);
+ 
+     double inputSampleRate = system_av_info.timing.sample_rate * fpsSync->getTimeStretchFactor();
++    coreSampleRate = (int) std::lround(system_av_info.timing.sample_rate);
+ 
+     audio = std::make_unique<Audio>(
+         (int32_t) std::lround(inputSampleRate),
 diff --git a/libretrodroid/src/main/cpp/libretrodroid.h b/libretrodroid/src/main/cpp/libretrodroid.h
-index b507aee..3762722 100644
+index b507aee..bd34367 100644
 --- a/libretrodroid/src/main/cpp/libretrodroid.h
 +++ b/libretrodroid/src/main/cpp/libretrodroid.h
-@@ -59,6 +59,7 @@ public:
+@@ -26,6 +26,8 @@
+ #include <vector>
+ #include <unordered_set>
+ #include <mutex>
++#include <functional>
++#include <array>
+ #include <memory>
+ #include <optional>
+ 
+@@ -59,6 +61,7 @@ public:
      void operator=(LibretroDroid const&) = delete;
  
      void setViewport(Rect viewportRect);
@@ -40,22 +125,108 @@ index b507aee..3762722 100644
  
  private:
      LibretroDroid() {}
-@@ -174,6 +175,7 @@ private:
+@@ -92,7 +95,18 @@ public:
+         const std::string& language
+     );
+     void resume();
+-    void step();
++    void step(const std::function<bool()>& beforeRun = nullptr);
++
++    // DragonNES: lockstep netplay (exactly one emulated frame per step, gated by beforeRun).
++    void setLockstep(bool enabled);
++
++    // DragonNES: game audio capture for video recording (interleaved stereo int16).
++    void setAudioCapture(bool enabled);
++    size_t readCapturedAudio(int16_t* out, size_t maxSamples);
++    int getAudioSampleRate() const { return coreSampleRate; }
++
++    // DragonNES: where the game picture is drawn (for recording only the game).
++    std::array<float, 4> getGameRect();
+     void pause();
+     void destroy();
+ 
+@@ -174,6 +188,12 @@ private:
      ImmersiveMode::Config immersiveModeConfig {};
  
      float defaultAspectRatio = 1.0;
 +    float aspectRatioOverride = -1.0;
++    bool lockstep = false;
++    int coreSampleRate = 0;
++    std::mutex captureLock;
++    bool audioCapture = false;
++    std::vector<int16_t> capturedAudio;
      bool dirtyVideo = false;
  
      std::mutex coreLock;
 diff --git a/libretrodroid/src/main/cpp/libretrodroidjni.cpp b/libretrodroid/src/main/cpp/libretrodroidjni.cpp
-index 2ec15cf..a7c1f73 100644
+index 2ec15cf..588296c 100644
 --- a/libretrodroid/src/main/cpp/libretrodroidjni.cpp
 +++ b/libretrodroid/src/main/cpp/libretrodroidjni.cpp
-@@ -599,6 +599,14 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setViewpor
+@@ -530,7 +530,14 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_step(
+     jclass obj,
+     jobject glRetroView
+ ) {
+-    LibretroDroid::getInstance().step();
++    static jmethodID beforeFrameMethod = nullptr;
++    if (beforeFrameMethod == nullptr) {
++        jclass viewClass = env->GetObjectClass(glRetroView);
++        beforeFrameMethod = env->GetMethodID(viewClass, "onBeforeFrame", "()Z");
++    }
++    LibretroDroid::getInstance().step([&]() -> bool {
++        return env->CallBooleanMethod(glRetroView, beforeFrameMethod) == JNI_TRUE;
++    });
+ 
+     if (LibretroDroid::getInstance().requiresVideoRefresh()) {
+         LibretroDroid::getInstance().clearRequiresVideoRefresh();
+@@ -599,6 +606,59 @@ JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setViewpor
      LibretroDroid::getInstance().setViewportAlignment(viewportAlignment);
  }
  
++JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setLockstep(
++    JNIEnv* env,
++    jclass obj,
++    jboolean enabled
++) {
++    LibretroDroid::getInstance().setLockstep(enabled);
++}
++
++JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setAudioCapture(
++    JNIEnv* env,
++    jclass obj,
++    jboolean enabled
++) {
++    LibretroDroid::getInstance().setAudioCapture(enabled);
++}
++
++JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_readCapturedAudio(
++    JNIEnv* env,
++    jclass obj,
++    jshortArray buffer
++) {
++    jsize capacity = env->GetArrayLength(buffer);
++    jshort* out = env->GetShortArrayElements(buffer, nullptr);
++    size_t n = LibretroDroid::getInstance().readCapturedAudio(reinterpret_cast<int16_t*>(out), (size_t) capacity);
++    env->ReleaseShortArrayElements(buffer, out, 0);
++    return (jint) n;
++}
++
++JNIEXPORT jint JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getAudioSampleRate(
++    JNIEnv* env,
++    jclass obj
++) {
++    return LibretroDroid::getInstance().getAudioSampleRate();
++}
++
++JNIEXPORT jfloatArray JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_getGameRect(
++    JNIEnv* env,
++    jclass obj
++) {
++    auto rect = LibretroDroid::getInstance().getGameRect();
++    jfloatArray result = env->NewFloatArray(4);
++    env->SetFloatArrayRegion(result, 0, 4, rect.data());
++    return result;
++}
++
 +JNIEXPORT void JNICALL Java_com_swordfish_libretrodroid_LibretroDroid_setAspectRatioOverride(
 +    JNIEnv* env,
 +    jclass obj,
@@ -401,7 +572,7 @@ index 4407e8b..a9fdc70 100644
      static std::string buildDefines(
          std::unordered_map<std::string, std::string> baseParams,
 diff --git a/libretrodroid/src/main/cpp/video.cpp b/libretrodroid/src/main/cpp/video.cpp
-index a75dbaf..98f1a56 100644
+index a75dbaf..1c3f180 100644
 --- a/libretrodroid/src/main/cpp/video.cpp
 +++ b/libretrodroid/src/main/cpp/video.cpp
 @@ -130,6 +130,8 @@ void Video::updateProgram() {
@@ -450,8 +621,27 @@ index a75dbaf..98f1a56 100644
          glActiveTexture(GL_TEXTURE0);
          glBindTexture(GL_TEXTURE_2D, 0);
  
+@@ -213,6 +231,18 @@ void Video::renderFrame() {
+     }
+ }
+ 
++std::array<float, 4> Video::getGameRect() {
++    auto& v = videoLayout.getForegroundVertices();
++    float xMin = 1.0F, xMax = -1.0F, yMin = 1.0F, yMax = -1.0F;
++    for (size_t i = 0; i + 1 < v.size(); i += 2) {
++        xMin = std::min(xMin, v[i]);
++        xMax = std::max(xMax, v[i]);
++        yMin = std::min(yMin, v[i + 1]);
++        yMax = std::max(yMax, v[i + 1]);
++    }
++    return { (xMin + 1.0F) / 2.0F, (yMin + 1.0F) / 2.0F, (xMax + 1.0F) / 2.0F, (yMax + 1.0F) / 2.0F };
++}
++
+ float Video::getScreenDensity() {
+     return std::min(videoLayout.getScreenWidth() / getTextureWidth(), videoLayout.getScreenHeight() / getTextureHeight());
+ }
 diff --git a/libretrodroid/src/main/cpp/video.h b/libretrodroid/src/main/cpp/video.h
-index 05bd6b6..e7a117c 100644
+index 05bd6b6..6987c66 100644
 --- a/libretrodroid/src/main/cpp/video.h
 +++ b/libretrodroid/src/main/cpp/video.h
 @@ -51,6 +51,8 @@ public:
@@ -463,7 +653,17 @@ index 05bd6b6..e7a117c 100644
      };
  
      Video(
-@@ -103,6 +105,7 @@ private:
+@@ -87,6 +89,9 @@ public:
+         return renderer->rendersInVideoCallback();
+     }
+ 
++    /** Game picture rectangle in GL window coordinates, normalized 0..1 (x0, y0, x1, y1; bottom-left origin). */
++    std::array<float, 4> getGameRect();
++
+ private:
+     void updateProgram();
+ 
+@@ -103,6 +108,7 @@ private:
      std::optional<ShaderManager::Config> loadedShaderType = std::nullopt;
  
      bool isDirty = false;
@@ -472,13 +672,29 @@ index 05bd6b6..e7a117c 100644
  
      std::vector<ShaderChainEntry> shadersChain;
 diff --git a/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt b/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt
-index 7eb8602..defb444 100644
+index 7eb8602..0325c77 100644
 --- a/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt
 +++ b/libretrodroid/src/main/java/com/swordfish/libretrodroid/GLRetroView.kt
-@@ -67,6 +67,11 @@ class GLRetroView(
+@@ -67,6 +67,27 @@ class GLRetroView(
          }
      }
  
++    /**
++     * Netplay gate, called on the GL thread before every emulated frame while lockstep is on.
++     * Return false to hold this frame (e.g. the other player's input has not arrived yet).
++     */
++    var lockstepHook: (() -> Boolean)? = null
++        set(value) {
++            field = value
++            queueEvent { LibretroDroid.setLockstep(value != null) }
++        }
++
++    /** Called on the GL thread after each step, before the frame is shown (used for video recording). */
++    var afterFrameHook: (() -> Unit)? = null
++
++    @Suppress("unused") // called from native code
++    fun onBeforeFrame(): Boolean = lockstepHook?.invoke() ?: true
++
 +    /** Forced picture aspect ratio (e.g. screen width / height for true full screen). 0 = core default. */
 +    var aspectRatioOverride: Float by Delegates.observable(0f) { _, _, value ->
 +        queueEvent { LibretroDroid.setAspectRatioOverride(value) }
@@ -487,7 +703,15 @@ index 7eb8602..defb444 100644
      var viewportAlignment: ViewportAlignment by Delegates.observable(ViewportAlignment.CENTER) { _, _, value ->
          LibretroDroid.setViewportAlignment(value.value)
      }
-@@ -444,6 +449,23 @@ class GLRetroView(
+@@ -319,6 +340,7 @@ class GLRetroView(
+         override fun onDrawFrame(gl: GL10) = catchExceptions {
+             if (isEmulationReady) {
+                 LibretroDroid.step(this@GLRetroView)
++                afterFrameHook?.invoke()
+                 lifecycle?.coroutineScope?.launch {
+                     retroGLEventsSubject.emit(GLRetroEvents.FrameRendered)
+                 }
+@@ -444,6 +466,23 @@ class GLRetroView(
                  )
              )
  
@@ -511,7 +735,7 @@ index 7eb8602..defb444 100644
              is ShaderConfig.CUT3 -> GLRetroShader(
                  LibretroDroid.SHADER_UPSCALE_CUT3,
                  buildParams(
-@@ -463,6 +485,10 @@ class GLRetroView(
+@@ -463,6 +502,10 @@ class GLRetroView(
          }
      }
  
@@ -523,7 +747,7 @@ index 7eb8602..defb444 100644
          return param.toString()
      }
 diff --git a/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java b/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java
-index 50eafa1..4323d54 100644
+index 50eafa1..a6bed75 100644
 --- a/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java
 +++ b/libretrodroid/src/main/java/com/swordfish/libretrodroid/LibretroDroid.java
 @@ -37,6 +37,8 @@ public class LibretroDroid {
@@ -535,12 +759,21 @@ index 50eafa1..4323d54 100644
  
      public static final String SHADER_UPSCALE_CUT_PARAM_USE_DYNAMIC_BLEND = "USE_DYNAMIC_BLEND";
      public static final String SHADER_UPSCALE_CUT_PARAM_BLEND_MIN_CONTRAST_EDGE = "BLEND_MIN_CONTRAST_EDGE";
-@@ -138,6 +140,8 @@ public class LibretroDroid {
+@@ -138,6 +140,17 @@ public class LibretroDroid {
      public static native void onKeyEvent(int port, int action, int keyCode);
  
      public static native void refreshAspectRatio();
 +    /** Forces the picture's aspect ratio (stretch / full screen). Values <= 0 restore the core's ratio. */
 +    public static native void setAspectRatioOverride(float aspectRatio);
++
++    /** DragonNES netplay: one frame per step, each gated by GLRetroView.onBeforeFrame(). */
++    public static native void setLockstep(boolean enabled);
++    /** DragonNES recording: capture game audio (interleaved stereo 16-bit). */
++    public static native void setAudioCapture(boolean enabled);
++    public static native int readCapturedAudio(short[] buffer);
++    public static native int getAudioSampleRate();
++    /** Game picture rectangle in GL window coordinates (x0, y0, x1, y1, 0..1, bottom-left origin). */
++    public static native float[] getGameRect();
  
      public static native Controller[][] getControllers();
      public static native void setControllerType(int port, int type);
